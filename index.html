@@ -61,10 +61,11 @@ main{padding:20px;max-width:900px;margin:0 auto}
 .paro-banner{background:var(--red);color:#fff;padding:14px 18px;border-radius:14px;display:flex;align-items:center;justify-content:space-between;font-size:16px;margin-bottom:16px}
 .paro-banner button{background:#fff;color:var(--red);border-radius:10px;padding:9px 16px;font-weight:700}
 .scan-card{background:var(--surf);border:1px solid var(--border);border-radius:18px;padding:16px;box-shadow:0 6px 18px rgba(30,25,20,.05)}
-#reader{width:100%;max-width:380px;margin:0 auto 12px;border-radius:14px;overflow:hidden}
+#reader{position:relative;width:100%;max-width:380px;margin:0 auto 12px;border-radius:14px;overflow:hidden;background:#000}
 #reader:empty{display:none}
-#reader:not(:empty){min-height:250px;background:#000}
-#reader video{width:100%!important;height:auto!important;display:block;object-fit:cover}
+#reader:not(:empty){height:300px}
+#reader>div{width:100%!important;height:100%!important;border:none!important}
+#reader video{width:100%!important;height:100%!important;object-fit:cover!important;display:block!important}
 #reader img[alt="Info icon"],#reader button{display:none!important}
 .scan-row{display:flex;gap:8px}
 .scan-row input{flex:1;background:var(--bg);border:1px solid var(--border);border-radius:12px;padding:14px;font-size:16px}
@@ -98,6 +99,42 @@ main{padding:20px;max-width:900px;margin:0 auto}
 .motivos{display:grid;grid-template-columns:1fr 1fr;gap:10px}
 .motivos button{background:var(--bg);border:1px solid var(--border);border-radius:14px;padding:18px;font-size:15px;font-weight:600}
 .motivos button:active{background:var(--surf2)}
+
+/* ---- encargado ---- */
+.subnav{display:flex;gap:6px;overflow-x:auto;padding:4px 0 10px;-webkit-overflow-scrolling:touch}
+.subnav button{background:var(--surf);border:1px solid var(--border);border-radius:999px;padding:9px 16px;font-weight:600;font-size:14px;white-space:nowrap;color:var(--muted)}
+.subnav button.on{background:var(--ink);color:#fff;border-color:var(--ink)}
+.enc-sec{padding-top:6px}
+#readerC{width:100%;max-width:380px;margin:0 auto 12px;border-radius:14px;overflow:hidden}
+#readerC:empty{display:none}
+#readerC:not(:empty){min-height:250px;background:#000}
+#readerC video{width:100%!important;height:auto!important;display:block;object-fit:cover}
+.buscar{width:100%;background:var(--surf);border:1px solid var(--border);border-radius:12px;padding:12px 14px;font-size:15px;margin-bottom:12px}
+.buscar:focus{outline:none;border-color:var(--terra)}
+.btn-ink{background:var(--ink);color:#fff;border-radius:12px;padding:14px;font-weight:700;font-size:15px}
+.btn-ink:disabled{opacity:.4}
+.full{width:100%;margin-top:12px}
+.row-top{display:flex;align-items:center;justify-content:space-between;gap:10px}
+.btn-ghost.sm{padding:8px 12px;font-size:16px}
+.form-card{background:var(--surf);border:1px solid var(--border);border-radius:16px;padding:16px;box-shadow:0 6px 18px rgba(30,25,20,.05);margin-bottom:8px}
+.frow{display:flex;gap:10px;align-items:center;margin-bottom:12px;flex-wrap:wrap}
+.seg{flex:1;background:var(--bg);border:1px solid var(--border);border-radius:12px;padding:11px;font-weight:600;color:var(--muted)}
+.seg.on{background:var(--terra);color:#fff;border-color:var(--terra)}
+.chk{display:flex;align-items:center;gap:6px;font-size:14px;color:var(--muted)}
+.stat-chip{display:inline-block;font-size:12px;font-weight:700;padding:3px 10px;border-radius:9px;margin:2px 4px 2px 0}
+.op-card{background:var(--surf);border:1px solid var(--border);border-radius:14px;padding:14px;box-shadow:0 4px 12px rgba(30,25,20,.04)}
+.op-card.paro{border-color:var(--red)}
+.op-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px}
+.op-name{font-weight:700;font-size:16px}
+.badge{font-size:11px;font-weight:700;padding:3px 10px;border-radius:9px}
+.badge.act{background:#E6F0E9;color:var(--green)}
+.badge.par{background:#F7E1DC;color:var(--red)}
+.badge.off{background:var(--surf2);color:var(--muted)}
+.aj-card{background:var(--surf);border:1px solid var(--border);border-radius:12px;padding:12px 14px;display:flex;justify-content:space-between;align-items:center}
+.aj-est{font-size:11px;font-weight:700;padding:3px 10px;border-radius:9px}
+.aj-est.pend{background:#F7EDDF;color:#B07A1E}
+.aj-est.aprob{background:#E6F0E9;color:var(--green)}
+.aj-est.rech{background:#F7E1DC;color:var(--red)}
 </style>
 </head>
 <body>
@@ -185,10 +222,79 @@ main{padding:20px;max-width:900px;margin:0 auto}
 
   <!-- vista encargado -->
   <main id="viewEncargado" class="hidden">
-    <div class="placeholder">
-      <h2>Vista Encargado</h2>
-      <p>Consumo, stock, ritmo del operario, inventario (con aprobación), etiquetas y partes.<br>Próxima entrega.</p>
+    <div class="subnav" id="encNav">
+      <button class="on" data-sec="consumo" onclick="Enc.go('consumo')">Consumo</button>
+      <button data-sec="stock" onclick="Enc.go('stock')">Stock</button>
+      <button data-sec="operarios" onclick="Enc.go('operarios')">Operarios</button>
+      <button data-sec="inventario" onclick="Enc.go('inventario')">Inventario</button>
+      <button data-sec="partes" onclick="Enc.go('partes')">Partes</button>
     </div>
+
+    <!-- CONSUMO -->
+    <section id="secConsumo" class="enc-sec">
+      <div class="scan-card">
+        <div id="readerC"></div>
+        <div class="scan-row">
+          <input id="manualC" placeholder="Escribe el código (OT…-…)" autocomplete="off">
+          <button class="btn-terra" onclick="Enc.manualConsumo()">Añadir</button>
+        </div>
+        <div class="scan-tools">
+          <button id="camBtnC" class="btn-ghost" onclick="Enc.toggleCam()">📷 Encender cámara</button>
+        </div>
+      </div>
+      <h3 class="sec">Por consumir <span id="cartCount" class="pill-count">0</span></h3>
+      <div id="cartList" class="lista"></div>
+      <div id="cartVacio" class="vacio">Escanea núcleos para añadirlos al consumo.</div>
+      <button id="btnAceptar" class="btn-ink full" onclick="Enc.aceptarConsumo()" disabled>Aceptar consumo</button>
+    </section>
+
+    <!-- STOCK -->
+    <section id="secStock" class="enc-sec hidden">
+      <input id="stockSearch" class="buscar" placeholder="Buscar núcleo por SKU o nombre…" oninput="Enc.renderStock()">
+      <div id="stockList" class="lista"></div>
+    </section>
+
+    <!-- OPERARIOS -->
+    <section id="secOperarios" class="enc-sec hidden">
+      <div class="row-top"><h3 class="sec">Ritmo y estado</h3><button class="btn-ghost sm" onclick="Enc.loadOperarios()">↻</button></div>
+      <div id="opsList" class="lista"></div>
+    </section>
+
+    <!-- INVENTARIO -->
+    <section id="secInventario" class="enc-sec hidden">
+      <div class="form-card">
+        <h3 class="sec">Proponer ajuste</h3>
+        <div class="frow">
+          <button id="tipoAlta" class="seg on" onclick="Enc.setTipo('alta')">Alta (sobran)</button>
+          <button id="tipoBaja" class="seg" onclick="Enc.setTipo('baja')">Baja (faltan)</button>
+        </div>
+        <input id="ajNuc" class="buscar" placeholder="Núcleo (SKU)…" list="nucList" autocomplete="off">
+        <datalist id="nucList"></datalist>
+        <div class="frow">
+          <input id="ajCant" type="number" min="1" value="1" class="buscar" style="max-width:120px">
+          <label id="ajMadurWrap" class="chk"><input type="checkbox" id="ajMadur"> Que maduren</label>
+        </div>
+        <input id="ajNota" class="buscar" placeholder="Nota (opcional)…" autocomplete="off">
+        <button class="btn-ink full" onclick="Enc.enviarAjuste()">Enviar a oficina</button>
+      </div>
+      <h3 class="sec">Mis solicitudes</h3>
+      <div id="ajList" class="lista"></div>
+      <div id="ajVacio" class="vacio">No has enviado solicitudes.</div>
+    </section>
+
+    <!-- PARTES -->
+    <section id="secPartes" class="enc-sec hidden">
+      <div class="row-top">
+        <input id="parteFecha" type="date" class="buscar" style="max-width:200px" onchange="Enc.loadPartes()">
+        <button class="btn-ghost sm" onclick="Enc.loadPartes()">Ver</button>
+      </div>
+      <h3 class="sec">OT lanzadas ese día</h3>
+      <div id="parteLanz" class="lista"></div>
+      <div id="parteLanzVacio" class="vacio">Sin OT ese día.</div>
+      <h3 class="sec">Fabricadas / Consumidas ese día</h3>
+      <div id="parteMov" class="lista"></div>
+      <div id="parteMovVacio" class="vacio">Sin movimientos ese día.</div>
+    </section>
   </main>
 </div>
 
@@ -278,6 +384,7 @@ const Login = {
     $('#viewOperario').classList.toggle('hidden', u.rol!=='operario');
     $('#viewEncargado').classList.toggle('hidden', u.rol!=='encargado');
     if(u.rol==='operario') Op.init(u);
+    else if(u.rol==='encargado') Enc.init(u);
   },
   logout(){
     sessionStorage.removeItem('molyn_user');
@@ -499,6 +606,250 @@ function beep(ok,dbl){
     if(!ok){mk(220,0,.25);} else if(dbl){mk(660,0,.1);mk(880,.12,.14);} else {mk(720,0,.12);}
   }catch(e){}
 }
+
+
+// ============================================================
+//  VISTA ENCARGADO
+// ============================================================
+const Enc = {
+  user:null, sec:'consumo', cart:new Map(), cam:null, camOn:false,
+  lastScan:{code:null,t:0}, mad:2, prodMap:{}, ajTipo:'alta',
+  stockData:[], ticking:false,
+
+  async init(u){
+    this.user=u;
+    try{
+      const {data:cfg}=await sb.from('config').select('maduracion').eq('id',1).single();
+      if(cfg && cfg.maduracion!=null) this.mad=cfg.maduracion;
+    }catch(e){}
+    try{
+      const {data:prods}=await sb.from('productos').select('sku,nombre').order('sku');
+      (prods||[]).forEach(p=>this.prodMap[p.sku]=p.nombre);
+      $('#nucList').innerHTML=(prods||[]).map(p=>`<option value="${esc(p.sku)}">${esc(p.nombre)}</option>`).join('');
+    }catch(e){}
+    // fecha de partes = hoy
+    $('#parteFecha').value=new Date().toISOString().slice(0,10);
+    if(!this.ticking){ this.ticking=true; setInterval(()=>this.tick(),1000); }
+    this.go('consumo');
+  },
+
+  go(sec){
+    this.sec=sec;
+    document.querySelectorAll('#encNav button').forEach(b=>b.classList.toggle('on', b.dataset.sec===sec));
+    ['consumo','stock','operarios','inventario','partes'].forEach(s=>{
+      $('#sec'+s.charAt(0).toUpperCase()+s.slice(1)).classList.toggle('hidden', s!==sec);
+    });
+    if(sec!=='consumo' && this.camOn) this.stopCam();
+    if(sec==='stock') this.loadStock();
+    if(sec==='operarios') this.loadOperarios();
+    if(sec==='inventario') this.loadAjustes();
+    if(sec==='partes') this.loadPartes();
+  },
+
+  // ---------- CONSUMO (carrito) ----------
+  manualConsumo(){ const c=$('#manualC').value.trim().toUpperCase(); if(c){ $('#manualC').value=''; this.addCart(c); } },
+  async addCart(code){
+    code=String(code).trim().toUpperCase();
+    if(this.cart.has(code)){ toast('Ya está en la lista','err'); return; }
+    let u;
+    try{ const {data}=await sb.from('unidades').select('id,ot,sku,estado').eq('id',code).limit(1); u=data&&data[0]; }
+    catch(e){ toast('Error: '+e.message,'err'); return; }
+    if(!u){ toast('Etiqueta no encontrada','err'); beep(false); return; }
+    if(u.estado!=='stock'){ toast(u.estado==='pendiente'?'Aún no fabricada':'No consumible ('+u.estado+')','err'); beep(false); return; }
+    this.cart.set(code,{unidad_id:code,ot:u.ot,sku:u.sku,nombre:this.prodMap[u.sku]||u.sku});
+    beep(true); this.renderCart();
+  },
+  removeCart(code){ this.cart.delete(code); this.renderCart(); },
+  renderCart(){
+    const arr=[...this.cart.values()];
+    $('#cartCount').textContent=arr.length;
+    $('#cartVacio').classList.toggle('hidden', arr.length>0);
+    $('#btnAceptar').disabled=arr.length===0;
+    $('#btnAceptar').textContent=arr.length? `Aceptar consumo (${arr.length})`:'Aceptar consumo';
+    $('#cartList').innerHTML=arr.map(it=>`<div class="urow">
+      <div><div class="uid">${esc(it.unidad_id)}</div><div class="usub">${esc(it.nombre)} · ${esc(it.ot)}</div></div>
+      <button class="btn-ghost sm" onclick="Enc.removeCart('${esc(it.unidad_id)}')">✕</button></div>`).join('');
+  },
+  async aceptarConsumo(){
+    const arr=[...this.cart.values()];
+    if(!arr.length) return;
+    if(!confirm(`¿Consumir ${arr.length} núcleos?`)) return;
+    const now=new Date().toISOString();
+    try{
+      for(const it of arr){
+        await sb.from('unidades').update({estado:'consumida',consumida_at:now}).eq('id',it.unidad_id);
+        await this.consumirReserva(it.sku);
+      }
+      toast('✓ '+arr.length+' consumidos','ok'); beep(true,true);
+      this.cart.clear(); this.renderCart();
+    }catch(e){ toast('Error al consumir: '+e.message,'err'); }
+  },
+  async consumirReserva(sku){
+    try{
+      const {data}=await sb.from('reservas').select('id,cantidad').eq('sku',sku).eq('estado','pendiente').order('created_at').order('id').limit(1);
+      const r=data&&data[0]; if(!r) return;
+      if(r.cantidad>1) await sb.from('reservas').update({cantidad:r.cantidad-1}).eq('id',r.id);
+      else await sb.from('reservas').update({estado:'consumida'}).eq('id',r.id);
+    }catch(e){}
+  },
+
+  // ---------- STOCK ----------
+  async loadStock(){
+    try{
+      const {data}=await sb.from('unidades').select('sku,fabricada_at').eq('estado','stock');
+      const now=Date.now(), madms=this.mad*86400000, g={};
+      (data||[]).forEach(u=>{
+        const b=g[u.sku]||(g[u.sku]={sku:u.sku,disp:0,madur:0});
+        const f=u.fabricada_at?new Date(u.fabricada_at).getTime():0;
+        if(f && now-f>=madms) b.disp++; else b.madur++;
+      });
+      this.stockData=Object.values(g).sort((a,b)=>a.sku.localeCompare(b.sku));
+      this.renderStock();
+    }catch(e){ toast('Error stock: '+e.message,'err'); }
+  },
+  renderStock(){
+    const q=($('#stockSearch').value||'').toLowerCase().trim();
+    let arr=this.stockData;
+    if(q) arr=arr.filter(b=>b.sku.toLowerCase().includes(q)||(this.prodMap[b.sku]||'').toLowerCase().includes(q));
+    $('#stockList').innerHTML=arr.map(b=>{
+      const nom=this.prodMap[b.sku]||b.sku, tot=b.disp+b.madur;
+      return `<div class="urow">
+        <div><div class="uid">${esc(nom)}</div><div class="usub">${esc(b.sku)}</div></div>
+        <div style="text-align:right">
+          <div style="font-size:20px;font-weight:800">${tot}</div>
+          <div class="usub"><span class="stat-chip" style="background:#F5E7DF;color:#B85C38">Disp ${b.disp}</span><span class="stat-chip" style="background:#E4EDF0;color:#5A7D8C">Mad ${b.madur}</span></div>
+        </div></div>`;
+    }).join('')||'<div class="vacio">Sin stock.</div>';
+  },
+
+  // ---------- OPERARIOS ----------
+  async loadOperarios(){
+    $('#opsList').innerHTML='<div class="vacio">Cargando…</div>';
+    try{
+      const hoy=new Date(); hoy.setHours(0,0,0,0); const hIso=hoy.toISOString();
+      const {data:ops}=await sb.from('usuarios').select('id,nombre').eq('rol','operario').eq('activo',true).order('nombre');
+      const {data:evs}=await sb.from('fabricacion_eventos').select('unidad_id,sku,usuario_id,tipo,ts').gte('ts',hIso);
+      const {data:pars}=await sb.from('paradas').select('usuario_id,motivo,inicio,fin').gte('inicio',hIso);
+      this._ops=(ops||[]).map(o=>{
+        const evO=(evs||[]).filter(e=>e.usuario_id===o.id);
+        const byU={}; evO.forEach(e=>{(byU[e.unidad_id]=byU[e.unidad_id]||[]).push(e);});
+        let enCurso=[], hechas=0, durs=[];
+        for(const uid in byU){
+          const a=byU[uid].sort((x,y)=>new Date(x.ts)-new Date(y.ts));
+          const inis=a.filter(x=>x.tipo==='inicio'), fins=a.filter(x=>x.tipo==='fin');
+          fins.forEach((f,i)=>{ hechas++; const ini=inis[i]; if(ini){const d=(new Date(f.ts)-new Date(ini.ts))/1000; if(d>0&&d<86400)durs.push(d);} });
+          if(inis.length>fins.length){ const li=inis[inis.length-1]; enCurso.push({sku:li.sku,start:new Date(li.ts).getTime()}); }
+        }
+        const paroAct=(pars||[]).find(p=>p.usuario_id===o.id && !p.fin);
+        const parosHoy=(pars||[]).filter(p=>p.usuario_id===o.id);
+        const media=durs.length?durs.reduce((a,b)=>a+b,0)/durs.length:0;
+        const uxh=media?Math.round(3600/media):0;
+        return {o,enCurso,hechas,media,uxh,paroAct,parosHoy};
+      });
+      this.renderOperarios();
+    }catch(e){ $('#opsList').innerHTML='<div class="vacio">Error: '+esc(e.message)+'</div>'; }
+  },
+  renderOperarios(){
+    if(!this._ops||!this._ops.length){ $('#opsList').innerHTML='<div class="vacio">Sin operarios.</div>'; return; }
+    $('#opsList').innerHTML=this._ops.map(x=>{
+      const st = x.paroAct ? `<span class="badge par">⏸ ${esc(x.paroAct.motivo)}</span>`
+               : x.enCurso.length ? `<span class="badge act">▶ Fabricando ${x.enCurso.length}</span>`
+               : `<span class="badge off">Inactivo</span>`;
+      const cur = x.enCurso.map(c=>`<span class="stat-chip" style="background:#F5E7DF;color:#B85C38">${esc(this.prodMap[c.sku]||c.sku)} · <span data-crono="${c.start}">0:00</span></span>`).join('');
+      const parInfo = x.parosHoy.length? `Paradas hoy: ${x.parosHoy.length}`:'Sin paradas';
+      return `<div class="op-card ${x.paroAct?'paro':''}">
+        <div class="op-head"><div class="op-name">${esc(x.o.nombre)}</div>${st}</div>
+        <div class="usub">Hechas hoy: <b>${x.hechas}</b> · ${x.uxh} uds/h · media ${x.media?fmtDur(x.media):'—'} · ${parInfo}</div>
+        ${cur?`<div style="margin-top:8px">${cur}</div>`:''}
+      </div>`;
+    }).join('');
+  },
+  tick(){
+    if(this.sec==='operarios'){
+      document.querySelectorAll('#opsList [data-crono]').forEach(el=>{
+        el.textContent=fmtDur((Date.now()-Number(el.dataset.crono))/1000);
+      });
+    }
+  },
+
+  // ---------- INVENTARIO ----------
+  setTipo(t){ this.ajTipo=t; $('#tipoAlta').classList.toggle('on',t==='alta'); $('#tipoBaja').classList.toggle('on',t==='baja'); $('#ajMadurWrap').style.display=t==='alta'?'':'none'; },
+  async enviarAjuste(){
+    const sku=$('#ajNuc').value.trim().toUpperCase();
+    const cant=parseInt($('#ajCant').value)||0;
+    if(!sku || !this.prodMap[sku]){ toast('Elige un núcleo válido','err'); return; }
+    if(cant<1){ toast('Cantidad no válida','err'); return; }
+    const row={sku, tipo:this.ajTipo, cantidad:cant, madurar:this.ajTipo==='alta'?$('#ajMadur').checked:false,
+               estado:'pendiente', solicitado_por:this.user.id, nota:$('#ajNota').value.trim()||null};
+    try{
+      await sb.from('ajustes_inventario').insert(row);
+      toast('Enviado a oficina','ok');
+      $('#ajNuc').value='';$('#ajCant').value='1';$('#ajNota').value='';$('#ajMadur').checked=false;
+      this.loadAjustes();
+    }catch(e){ toast('Error: '+e.message,'err'); }
+  },
+  async loadAjustes(){
+    try{
+      const {data}=await sb.from('ajustes_inventario').select('*').eq('solicitado_por',this.user.id).order('created_at',{ascending:false}).limit(30);
+      const arr=data||[];
+      $('#ajVacio').classList.toggle('hidden', arr.length>0);
+      $('#ajList').innerHTML=arr.map(a=>{
+        const nom=this.prodMap[a.sku]||a.sku;
+        const est=a.estado==='aprobado'?'aprob':a.estado==='rechazado'?'rech':'pend';
+        return `<div class="aj-card">
+          <div><div class="uid">${a.tipo==='alta'?'▲ Alta':'▼ Baja'} · ${a.cantidad} uds</div>
+          <div class="usub">${esc(nom)}${a.nota?' · '+esc(a.nota):''}</div></div>
+          <span class="aj-est ${est}">${esc(a.estado)}</span></div>`;
+      }).join('');
+    }catch(e){ $('#ajList').innerHTML='<div class="vacio">Error: '+esc(e.message)+'</div>'; }
+  },
+
+  // ---------- PARTES ----------
+  async loadPartes(){
+    const f=$('#parteFecha').value; if(!f) return;
+    const ini=new Date(f+'T00:00:00'); const fin=new Date(f+'T23:59:59.999');
+    const iIso=ini.toISOString(), fIso=fin.toISOString();
+    try{
+      const {data:ords}=await sb.from('ordenes').select('ot,sku,nombre,cantidad,lanzada_at').gte('lanzada_at',iIso).lte('lanzada_at',fIso).order('ot');
+      const oarr=ords||[];
+      $('#parteLanzVacio').classList.toggle('hidden', oarr.length>0);
+      $('#parteLanz').innerHTML=oarr.map(o=>`<div class="urow"><div><div class="uid">${esc(o.ot)} · ${esc(o.sku)}</div><div class="usub">${esc(o.nombre||'')}</div></div><div style="font-weight:800;font-size:18px">${o.cantidad}</div></div>`).join('');
+
+      // fabricadas (fin) + consumidas ese día, agrupado por sku
+      const {data:evs}=await sb.from('fabricacion_eventos').select('sku,tipo,ts').eq('tipo','fin').gte('ts',iIso).lte('ts',fIso);
+      const {data:cons}=await sb.from('unidades').select('sku,consumida_at').gte('consumida_at',iIso).lte('consumida_at',fIso);
+      const g={};
+      (evs||[]).forEach(e=>{(g[e.sku]=g[e.sku]||{sku:e.sku,fab:0,con:0}).fab++;});
+      (cons||[]).forEach(c=>{(g[c.sku]=g[c.sku]||{sku:c.sku,fab:0,con:0}).con++;});
+      const marr=Object.values(g).sort((a,b)=>a.sku.localeCompare(b.sku));
+      $('#parteMovVacio').classList.toggle('hidden', marr.length>0);
+      $('#parteMov').innerHTML=marr.map(m=>{
+        const nom=this.prodMap[m.sku]||m.sku;
+        return `<div class="urow"><div><div class="uid">${esc(nom)}</div><div class="usub">${esc(m.sku)}</div></div>
+          <div style="text-align:right"><span class="stat-chip" style="background:#E6F0E9;color:#4C9A5E">Fabr ${m.fab}</span><span class="stat-chip" style="background:#F7E1DC;color:#C0492B">Cons ${m.con}</span></div></div>`;
+      }).join('');
+    }catch(e){ toast('Error partes: '+e.message,'err'); }
+  },
+
+  // ---------- cámara ----------
+  async toggleCam(){
+    if(this.camOn){ await this.stopCam(); return; }
+    $('#readerC').innerHTML='';
+    try{
+      this.cam=new Html5Qrcode('readerC',{verbose:false});
+      const cfg={fps:10,qrbox:{width:230,height:230},aspectRatio:1.0};
+      const onScan=txt=>{ const now=Date.now(); if(txt===this.lastScan.code && now-this.lastScan.t<3000) return; this.lastScan={code:txt,t:now}; this.addCart(txt); };
+      try{ await this.cam.start({facingMode:'environment'},cfg,onScan,()=>{}); }
+      catch(e1){ const cams=await Html5Qrcode.getCameras(); if(cams&&cams.length){ await this.cam.start(cams[cams.length-1].id,cfg,onScan,()=>{}); } else throw e1; }
+      this.camOn=true; $('#camBtnC').textContent='📷 Apagar cámara';
+    }catch(e){ toast('No se pudo abrir la cámara: '+(e.message||e),'err'); $('#readerC').innerHTML=''; }
+  },
+  async stopCam(){
+    try{ if(this.cam){ await this.cam.stop(); this.cam.clear(); } }catch(e){}
+    this.camOn=false; this.cam=null; $('#camBtnC').textContent='📷 Encender cámara'; $('#readerC').innerHTML='';
+  }
+};
+
 
 Login.init();
 </script>
