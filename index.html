@@ -61,8 +61,11 @@ main{padding:20px;max-width:900px;margin:0 auto}
 .paro-banner{background:var(--red);color:#fff;padding:14px 18px;border-radius:14px;display:flex;align-items:center;justify-content:space-between;font-size:16px;margin-bottom:16px}
 .paro-banner button{background:#fff;color:var(--red);border-radius:10px;padding:9px 16px;font-weight:700}
 .scan-card{background:var(--surf);border:1px solid var(--border);border-radius:18px;padding:16px;box-shadow:0 6px 18px rgba(30,25,20,.05)}
-#reader{border-radius:14px;overflow:hidden;margin-bottom:12px}
+#reader{width:100%;max-width:380px;margin:0 auto 12px;border-radius:14px;overflow:hidden}
 #reader:empty{display:none}
+#reader:not(:empty){min-height:250px;background:#000}
+#reader video{width:100%!important;height:auto!important;display:block;object-fit:cover}
+#reader img[alt="Info icon"],#reader button{display:none!important}
 .scan-row{display:flex;gap:8px}
 .scan-row input{flex:1;background:var(--bg);border:1px solid var(--border);border-radius:12px;padding:14px;font-size:16px}
 .scan-tools{display:flex;gap:8px;margin-top:10px}
@@ -428,13 +431,21 @@ const Op = {
   // ---------- cámara ----------
   async toggleCam(){
     if(this.camOn){ await this.stopCam(); return; }
+    $('#reader').innerHTML='';
     try{
-      this.cam=new Html5Qrcode('reader');
-      await this.cam.start({facingMode:'environment'},{fps:10,qrbox:{width:230,height:230}},
-        txt=>{ const now=Date.now(); if(txt===this.lastScan.code && now-this.lastScan.t<3000) return; this.lastScan={code:txt,t:now}; this.scan(txt); },
-        ()=>{});
+      this.cam=new Html5Qrcode('reader', {verbose:false});
+      const cfg={fps:10, qrbox:{width:230,height:230}, aspectRatio:1.0};
+      const onScan=txt=>{ const now=Date.now(); if(txt===this.lastScan.code && now-this.lastScan.t<3000) return; this.lastScan={code:txt,t:now}; this.scan(txt); };
+      try{
+        await this.cam.start({facingMode:'environment'}, cfg, onScan, ()=>{});
+      }catch(e1){
+        // reintento con la primera cámara disponible
+        const cams=await Html5Qrcode.getCameras();
+        if(cams && cams.length){ await this.cam.start(cams[cams.length-1].id, cfg, onScan, ()=>{}); }
+        else throw e1;
+      }
       this.camOn=true; $('#camBtn').textContent='📷 Apagar cámara';
-    }catch(e){ toast('No se pudo abrir la cámara: '+e.message,'err'); }
+    }catch(e){ toast('No se pudo abrir la cámara: '+(e.message||e),'err'); $('#reader').innerHTML=''; }
   },
   async stopCam(){
     try{ if(this.cam){ await this.cam.stop(); this.cam.clear(); } }catch(e){}
