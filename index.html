@@ -56,6 +56,45 @@ main{padding:20px;max-width:900px;margin:0 auto}
 .toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:var(--ink);color:#fff;padding:12px 20px;border-radius:12px;font-weight:600;opacity:0;transition:.2s;z-index:100;pointer-events:none;max-width:90%}
 .toast.show{opacity:1}
 .toast.err{background:var(--red)}.toast.ok{background:var(--green)}
+
+/* ---------- operario ---------- */
+.paro-banner{background:var(--red);color:#fff;padding:14px 18px;border-radius:14px;display:flex;align-items:center;justify-content:space-between;font-size:16px;margin-bottom:16px}
+.paro-banner button{background:#fff;color:var(--red);border-radius:10px;padding:9px 16px;font-weight:700}
+.scan-card{background:var(--surf);border:1px solid var(--border);border-radius:18px;padding:16px;box-shadow:0 6px 18px rgba(30,25,20,.05)}
+#reader{border-radius:14px;overflow:hidden;margin-bottom:12px}
+#reader:empty{display:none}
+.scan-row{display:flex;gap:8px}
+.scan-row input{flex:1;background:var(--bg);border:1px solid var(--border);border-radius:12px;padding:14px;font-size:16px}
+.scan-tools{display:flex;gap:8px;margin-top:10px}
+.scan-tools button{flex:1;padding:13px;border-radius:12px;font-size:15px;font-weight:700}
+.btn-terra{background:var(--terra);color:#fff;border-radius:12px;padding:0 20px;font-weight:700;font-size:15px}
+.btn-ghost{background:var(--surf2);color:var(--ink)}
+.btn-paro{background:#F7E1DC;color:var(--red)}
+.full{width:100%;margin-top:8px;padding:13px;border-radius:12px;font-weight:700}
+
+.kpis3{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin:16px 0}
+.kbox{background:var(--surf);border:1px solid var(--border);border-radius:16px;padding:14px;text-align:center}
+.kbox .kn{font-size:26px;font-weight:800}
+.kbox .kl{font-size:10px;color:var(--muted);letter-spacing:.5px;margin-top:2px}
+
+.sec{font-size:15px;margin:20px 0 10px;display:flex;align-items:center;gap:8px}
+.pill-count{background:var(--terra);color:#fff;border-radius:999px;font-size:12px;padding:2px 9px;font-weight:700}
+.lista{display:flex;flex-direction:column;gap:10px}
+.vacio{color:var(--muted);font-size:14px;padding:10px 2px}
+.urow{background:var(--surf);border:1px solid var(--border);border-radius:14px;padding:13px 16px;display:flex;align-items:center;justify-content:space-between}
+.urow.curso{border-left:4px solid var(--terra)}
+.urow .uid{font-weight:700;font-size:15px}
+.urow .usub{font-size:12px;color:var(--muted);margin-top:1px}
+.urow .crono{font-size:22px;font-weight:800;font-variant-numeric:tabular-nums;color:var(--terra)}
+.urow.done .crono{color:var(--green);font-size:16px}
+.urow .avg{font-size:11px;color:var(--muted)}
+
+.modal{position:fixed;inset:0;background:rgba(20,18,15,.55);display:flex;align-items:flex-end;justify-content:center;z-index:200}
+.modal-box{background:var(--surf);border-radius:20px 20px 0 0;padding:22px;width:100%;max-width:520px}
+.modal-box h3{margin:0 0 16px}
+.motivos{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.motivos button{background:var(--bg);border:1px solid var(--border);border-radius:14px;padding:18px;font-size:15px;font-weight:600}
+.motivos button:active{background:var(--surf2)}
 </style>
 </head>
 <body>
@@ -89,11 +128,57 @@ main{padding:20px;max-width:900px;margin:0 auto}
 
   <!-- vista operario -->
   <main id="viewOperario" class="hidden">
-    <div class="placeholder">
-      <h2>Vista Operario</h2>
-      <p>Escaneo de fabricación con cronómetro y paradas.<br>Próxima entrega.</p>
+    <!-- barra de parada -->
+    <div id="paroBanner" class="paro-banner hidden">
+      <div>⏸ <b id="paroMotivo">Parada</b> · <span id="paroTiempo">0:00</span></div>
+      <button onclick="Op.reanudar()">Reanudar</button>
     </div>
+
+    <!-- escaneo -->
+    <div class="scan-card">
+      <div id="reader"></div>
+      <div class="scan-row">
+        <input id="manualCode" placeholder="Escribe el código (OT…-…)" autocomplete="off">
+        <button class="btn-terra" onclick="Op.manual()">Enviar</button>
+      </div>
+      <div class="scan-tools">
+        <button id="camBtn" class="btn-ghost" onclick="Op.toggleCam()">📷 Encender cámara</button>
+        <button class="btn-paro" onclick="Op.abrirParada()">⏸ Parada</button>
+      </div>
+    </div>
+
+    <!-- KPIs del día -->
+    <div class="kpis3">
+      <div class="kbox"><div class="kn" id="kHoy">0</div><div class="kl">HECHAS HOY</div></div>
+      <div class="kbox"><div class="kn" id="kUxh">0</div><div class="kl">UDS/HORA</div></div>
+      <div class="kbox"><div class="kn" id="kEnCurso">0</div><div class="kl">EN CURSO</div></div>
+    </div>
+
+    <!-- en curso -->
+    <h3 class="sec">En fabricación <span id="curCount" class="pill-count">0</span></h3>
+    <div id="enCurso" class="lista"></div>
+    <div id="enCursoVacio" class="vacio">Escanea una etiqueta para empezar a fabricar.</div>
+
+    <!-- últimas -->
+    <h3 class="sec">Últimas fabricadas</h3>
+    <div id="ultimas" class="lista"></div>
+    <div id="ultimasVacio" class="vacio">Todavía no has terminado ninguna hoy.</div>
   </main>
+
+  <!-- modal parada -->
+  <div id="paroModal" class="modal hidden">
+    <div class="modal-box">
+      <h3>Motivo de la parada</h3>
+      <div class="motivos">
+        <button onclick="Op.iniciarParada('Desayuno')">☕ Desayuno</button>
+        <button onclick="Op.iniciarParada('Comida')">🍽️ Comida</button>
+        <button onclick="Op.iniciarParada('Avería')">🔧 Avería</button>
+        <button onclick="Op.iniciarParada('Falta material')">📦 Falta material</button>
+        <button onclick="Op.iniciarParada('Otro')">➕ Otro</button>
+      </div>
+      <button class="btn-ghost full" onclick="Op.cerrarModal()">Cancelar</button>
+    </div>
+  </div>
 
   <!-- vista encargado -->
   <main id="viewEncargado" class="hidden">
@@ -107,6 +192,7 @@ main{padding:20px;max-width:900px;margin:0 auto}
 <div class="toast" id="toast"></div>
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
 <script>
 const SUPABASE_URL = "https://kmfdywyeesybqqfmfxys.supabase.co";
 const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImttZmR5d3llZXN5YnFxZm1meHlzIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQyNTA0MDMsImV4cCI6MjA5OTgyNjQwM30.dDrPPvqxqWBqFTA5FNC3YLAVK53nm8V2tn5JKHN9ve4";
@@ -188,6 +274,7 @@ const Login = {
     $('#whoName').innerHTML = `<b>${esc(u.nombre)}</b> · ${u.rol}`;
     $('#viewOperario').classList.toggle('hidden', u.rol!=='operario');
     $('#viewEncargado').classList.toggle('hidden', u.rol!=='encargado');
+    if(u.rol==='operario') Op.init(u);
   },
   logout(){
     sessionStorage.removeItem('molyn_user');
@@ -195,6 +282,212 @@ const Login = {
   }
 };
 function esc(s){return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
+
+// ============================================================
+//  VISTA OPERARIO
+// ============================================================
+const Op = {
+  user:null, enCurso:new Map(), ultimas:[], hechasHoy:0, duracionesHoy:[],
+  paro:null, paroInicio:null, prodMap:{}, avgCache:{}, cam:null, camOn:false,
+  lastScan:{code:null, t:0}, ticking:false,
+
+  async init(u){
+    this.user=u;
+    // productos (sku -> nombre)
+    try{
+      const {data:prods}=await sb.from('productos').select('sku,nombre');
+      (prods||[]).forEach(p=>this.prodMap[p.sku]=p.nombre);
+    }catch(e){}
+    await this.reconstruir();
+    await this.comprobarParadaActiva();
+    if(!this.ticking){ this.ticking=true; setInterval(()=>this.tick(),1000); }
+    this.render();
+  },
+
+  // reconstruye 'en curso' y 'hechas hoy' desde la BD (robusto a recargas)
+  async reconstruir(){
+    this.enCurso.clear(); this.hechasHoy=0; this.duracionesHoy=[]; this.ultimas=[];
+    try{
+      const {data:evs}=await sb.from('fabricacion_eventos')
+        .select('unidad_id,ot,sku,tipo,ts').eq('usuario_id',this.user.id).order('ts');
+      const byU={};
+      (evs||[]).forEach(e=>{(byU[e.unidad_id]=byU[e.unidad_id]||[]).push(e);});
+      const hoy=new Date(); hoy.setHours(0,0,0,0);
+      for(const uid in byU){
+        const arr=byU[uid];
+        const inis=arr.filter(e=>e.tipo==='inicio');
+        const fins=arr.filter(e=>e.tipo==='fin');
+        if(inis.length>fins.length){
+          const li=inis[inis.length-1];
+          this.enCurso.set(uid,{unidad_id:uid,ot:li.ot,sku:li.sku,start:new Date(li.ts).getTime()});
+        }
+        // finalizadas hoy
+        fins.forEach((f,idx)=>{
+          if(new Date(f.ts)>=hoy){
+            this.hechasHoy++;
+            const ini=inis[idx];
+            if(ini){ const d=(new Date(f.ts)-new Date(ini.ts))/1000; if(d>0&&d<86400){this.duracionesHoy.push(d); this.ultimas.unshift({unidad_id:f.unidad_id,sku:f.sku,seg:d});}}
+          }
+        });
+      }
+      this.ultimas=this.ultimas.slice(0,10);
+    }catch(e){ toast('Error cargando datos: '+e.message,'err'); }
+  },
+
+  async comprobarParadaActiva(){
+    try{
+      const {data}=await sb.from('paradas').select('id,motivo,inicio')
+        .eq('usuario_id',this.user.id).is('fin',null).order('inicio',{ascending:false}).limit(1);
+      if(data&&data.length){ this.paro=data[0]; this.paroInicio=new Date(data[0].inicio).getTime(); this.mostrarParo(); }
+    }catch(e){}
+  },
+
+  // ---------- escaneo ----------
+  async manual(){
+    const c=$('#manualCode').value.trim().toUpperCase();
+    if(c){ $('#manualCode').value=''; this.scan(c); }
+  },
+  async scan(code){
+    code=String(code).trim().toUpperCase();
+    if(this.paro){ toast('Hay una parada activa. Reanuda para seguir.','err'); beep(false); return; }
+    if(this.enCurso.has(code)){ return this.finalizar(code); }
+    return this.iniciar(code);
+  },
+  async iniciar(code){
+    let u;
+    try{
+      const {data}=await sb.from('unidades').select('id,ot,sku,estado').eq('id',code).limit(1);
+      u=data&&data[0];
+    }catch(e){ toast('Error: '+e.message,'err'); return; }
+    if(!u){ toast('Etiqueta no encontrada: '+code,'err'); beep(false); return; }
+    if(u.estado!=='pendiente'){
+      toast(u.estado==='stock'?'Esa unidad ya está fabricada':'Unidad '+u.estado+', no válida','err'); beep(false); return;
+    }
+    try{
+      await sb.from('fabricacion_eventos').insert({unidad_id:u.id,ot:u.ot,sku:u.sku,usuario_id:this.user.id,tipo:'inicio'});
+    }catch(e){ toast('No se pudo iniciar: '+e.message,'err'); return; }
+    this.enCurso.set(u.id,{unidad_id:u.id,ot:u.ot,sku:u.sku,start:Date.now()});
+    this.avgSku(u.sku); // precarga media
+    toast('▶ Iniciada '+u.id,'ok'); beep(true);
+    this.render();
+  },
+  async finalizar(code){
+    const it=this.enCurso.get(code);
+    const seg=(Date.now()-it.start)/1000;
+    try{
+      await sb.from('fabricacion_eventos').insert({unidad_id:code,ot:it.ot,sku:it.sku,usuario_id:this.user.id,tipo:'fin'});
+      await sb.from('unidades').update({estado:'stock',fabricada_at:new Date().toISOString()}).eq('id',code);
+    }catch(e){ toast('No se pudo finalizar: '+e.message,'err'); return; }
+    this.enCurso.delete(code);
+    this.hechasHoy++; this.duracionesHoy.push(seg);
+    this.ultimas.unshift({unidad_id:code,sku:it.sku,seg}); this.ultimas=this.ultimas.slice(0,10);
+    this.avgCache[it.sku]=null; // recalcular media
+    toast('✓ Terminada '+code+' ('+fmtDur(seg)+')','ok'); beep(true,true);
+    this.render();
+  },
+
+  // media por SKU (núcleo) desde el histórico
+  async avgSku(sku){
+    if(this.avgCache[sku]!=null) return this.avgCache[sku];
+    this.avgCache[sku]=0;
+    try{
+      const {data}=await sb.from('fabricacion_eventos').select('unidad_id,tipo,ts').eq('sku',sku).order('ts');
+      const byU={}; (data||[]).forEach(e=>{(byU[e.unidad_id]=byU[e.unidad_id]||[]).push(e);});
+      const ds=[];
+      for(const uid in byU){
+        const a=byU[uid]; const i=a.find(x=>x.tipo==='inicio'); const f=a.find(x=>x.tipo==='fin');
+        if(i&&f){ const d=(new Date(f.ts)-new Date(i.ts))/1000; if(d>0&&d<86400) ds.push(d); }
+      }
+      this.avgCache[sku]= ds.length? ds.reduce((a,b)=>a+b,0)/ds.length : 0;
+    }catch(e){}
+    this.render();
+    return this.avgCache[sku];
+  },
+
+  // ---------- paradas ----------
+  abrirParada(){ $('#paroModal').classList.remove('hidden'); },
+  cerrarModal(){ $('#paroModal').classList.add('hidden'); },
+  async iniciarParada(motivo){
+    this.cerrarModal();
+    try{
+      const {data}=await sb.from('paradas').insert({usuario_id:this.user.id,motivo}).select('id,motivo,inicio').single();
+      this.paro=data; this.paroInicio=new Date(data.inicio).getTime(); this.mostrarParo();
+    }catch(e){ toast('No se pudo registrar la parada: '+e.message,'err'); }
+  },
+  async reanudar(){
+    if(!this.paro) return;
+    try{ await sb.from('paradas').update({fin:new Date().toISOString()}).eq('id',this.paro.id); }catch(e){}
+    this.paro=null; this.paroInicio=null;
+    $('#paroBanner').classList.add('hidden');
+  },
+  mostrarParo(){
+    $('#paroMotivo').textContent=this.paro.motivo;
+    $('#paroBanner').classList.remove('hidden');
+  },
+
+  // ---------- cámara ----------
+  async toggleCam(){
+    if(this.camOn){ await this.stopCam(); return; }
+    try{
+      this.cam=new Html5Qrcode('reader');
+      await this.cam.start({facingMode:'environment'},{fps:10,qrbox:{width:230,height:230}},
+        txt=>{ const now=Date.now(); if(txt===this.lastScan.code && now-this.lastScan.t<3000) return; this.lastScan={code:txt,t:now}; this.scan(txt); },
+        ()=>{});
+      this.camOn=true; $('#camBtn').textContent='📷 Apagar cámara';
+    }catch(e){ toast('No se pudo abrir la cámara: '+e.message,'err'); }
+  },
+  async stopCam(){
+    try{ if(this.cam){ await this.cam.stop(); this.cam.clear(); } }catch(e){}
+    this.camOn=false; this.cam=null; $('#camBtn').textContent='📷 Encender cámara'; $('#reader').innerHTML='';
+  },
+
+  // ---------- render / tick ----------
+  tick(){
+    const now=Date.now();
+    this.enCurso.forEach((it)=>{ const el=document.getElementById('c_'+cssId(it.unidad_id)); if(el) el.textContent=fmtDur((now-it.start)/1000); });
+    if(this.paro){ $('#paroTiempo').textContent=fmtDur((now-this.paroInicio)/1000); }
+  },
+  render(){
+    // KPIs
+    $('#kHoy').textContent=this.hechasHoy;
+    $('#kEnCurso').textContent=this.enCurso.size;
+    const uxh = this.duracionesHoy.length ? Math.round(3600/(this.duracionesHoy.reduce((a,b)=>a+b,0)/this.duracionesHoy.length)) : 0;
+    $('#kUxh').textContent=uxh;
+    $('#curCount').textContent=this.enCurso.size;
+
+    // en curso
+    const cont=$('#enCurso'); const arr=[...this.enCurso.values()];
+    $('#enCursoVacio').classList.toggle('hidden', arr.length>0);
+    cont.innerHTML=arr.map(it=>{
+      const avg=this.avgCache[it.sku];
+      const nom=this.prodMap[it.sku]||it.sku;
+      const avgt=avg?`media ${fmtDur(avg)}`:'';
+      return `<div class="urow curso">
+        <div><div class="uid">${esc(it.unidad_id)}</div>
+        <div class="usub">${esc(nom)} · ${esc(it.ot)} · ${avgt}</div></div>
+        <div class="crono" id="c_${cssId(it.unidad_id)}">0:00</div></div>`;
+    }).join('');
+
+    // últimas
+    $('#ultimasVacio').classList.toggle('hidden', this.ultimas.length>0);
+    $('#ultimas').innerHTML=this.ultimas.map(u=>{
+      const nom=this.prodMap[u.sku]||u.sku;
+      return `<div class="urow done">
+        <div><div class="uid">${esc(u.unidad_id)}</div><div class="usub">${esc(nom)}</div></div>
+        <div class="crono">✓ ${fmtDur(u.seg)}</div></div>`;
+    }).join('');
+  }
+};
+
+function fmtDur(s){s=Math.max(0,Math.floor(s));const m=Math.floor(s/60),ss=s%60;if(m>=60){const h=Math.floor(m/60);return h+':'+String(m%60).padStart(2,'0')+':'+String(ss).padStart(2,'0');}return m+':'+String(ss).padStart(2,'0');}
+function cssId(s){return String(s).replace(/[^a-zA-Z0-9]/g,'_');}
+let _ac;
+function beep(ok,dbl){
+  try{ _ac=_ac||new (window.AudioContext||window.webkitAudioContext)();
+    const t=_ac.currentTime; const mk=(f,s,d)=>{const o=_ac.createOscillator(),g=_ac.createGain();o.frequency.value=f;o.connect(g);g.connect(_ac.destination);g.gain.setValueAtTime(.12,t+s);g.gain.exponentialRampToValueAtTime(.001,t+s+d);o.start(t+s);o.stop(t+s+d);};
+    if(!ok){mk(220,0,.25);} else if(dbl){mk(660,0,.1);mk(880,.12,.14);} else {mk(720,0,.12);}
+  }catch(e){}
+}
 
 Login.init();
 </script>
