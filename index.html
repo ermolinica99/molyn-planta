@@ -99,6 +99,10 @@ main{padding:20px;max-width:900px;margin:0 auto}
 .urow .crono{font-size:22px;font-weight:800;font-variant-numeric:tabular-nums;color:var(--terra)}
 .urow.done .crono{color:var(--green);font-size:16px}
 .urow .avg{font-size:11px;color:var(--muted)}
+.urow.curso.over{border-left-color:var(--red);background:#FCEEEA}
+.urow .ref{font-weight:700;color:var(--ink)}
+.prog{height:6px;background:var(--surf2);border-radius:4px;margin-top:8px;overflow:hidden}
+.prog i{display:block;height:100%;width:0;background:var(--green);border-radius:4px;transition:width .9s linear,background .3s}
 
 .modal{position:fixed;inset:0;background:rgba(20,18,15,.55);display:flex;align-items:flex-end;justify-content:center;z-index:200}
 .modal-box{background:var(--surf);border-radius:20px 20px 0 0;padding:22px;width:100%;max-width:520px}
@@ -422,7 +426,7 @@ const Op = {
   user:null, enCurso:new Map(), ultimas:[], hechasHoy:0, duracionesHoy:[],
   paro:null, paroInicio:null, prodMap:{}, avgCache:{}, cam:null, camOn:false,
   lastScan:{code:null, t:0}, ticking:false,
-  turno:null, turnoInicio:null, paradasSeg:0, cfg:{descanso_min:60},
+  turno:null, turnoInicio:null, paradasSeg:0, cfg:{descanso_min:60}, stdSku:{},
 
   async init(u){
     this.user=u;
@@ -433,6 +437,11 @@ const Op = {
     try{
       const {data:prods}=await sb.from('productos').select('sku,nombre');
       (prods||[]).forEach(p=>this.prodMap[p.sku]=p.nombre);
+    }catch(e){}
+    // tiempos estándar (mediana vigente por núcleo)
+    try{
+      const {data:ts}=await sb.from('tiempos_sku').select('sku,mediana_seg').eq('vigente',true);
+      (ts||[]).forEach(t=>this.stdSku[t.sku]=Number(t.mediana_seg));
     }catch(e){}
     await this.comprobarTurno();
     await this.reconstruir();
@@ -633,7 +642,21 @@ const Op = {
   // ---------- render / tick ----------
   tick(){
     const now=Date.now();
-    this.enCurso.forEach((it)=>{ const el=document.getElementById('c_'+cssId(it.unidad_id)); if(el) el.textContent=fmtDur((now-it.start)/1000); });
+    this.enCurso.forEach((it)=>{
+      const seg=(now-it.start)/1000;
+      const el=document.getElementById('c_'+cssId(it.unidad_id));
+      if(el) el.textContent=fmtDur(seg);
+      const std=this.stdSku[it.sku]||0;
+      const bar=document.getElementById('p_'+cssId(it.unidad_id));
+      const row=document.getElementById('row_'+cssId(it.unidad_id));
+      if(std>0 && bar){
+        const pct=Math.min(100, seg/std*100);
+        bar.style.width=pct+'%';
+        const pasado = seg>std;
+        bar.style.background = pasado? 'var(--red)' : (pct>80? '#D9963C' : 'var(--green)');
+        if(row){ row.classList.toggle('over', pasado); if(el) el.style.color = pasado? 'var(--red)':''; }
+      }
+    });
     if(this.paro){ $('#paroTiempo').textContent=fmtDur((now-this.paroInicio)/1000); }
     if(this.turno){
       const dur=(now-this.turnoInicio)/1000;
@@ -657,12 +680,15 @@ const Op = {
     const cont=$('#enCurso'); const arr=[...this.enCurso.values()];
     $('#enCursoVacio').classList.toggle('hidden', arr.length>0);
     cont.innerHTML=arr.map(it=>{
-      const avg=this.avgCache[it.sku];
       const nom=this.prodMap[it.sku]||it.sku;
-      const avgt=avg?`media ${fmtDur(avg)}`:'';
-      return `<div class="urow curso">
-        <div><div class="uid">${esc(it.unidad_id)}</div>
-        <div class="usub">${esc(nom)} · ${esc(it.ot)} · ${avgt}</div></div>
+      const std=this.stdSku[it.sku]||0;
+      const refTxt = std? `ref. ${fmtDur(std)}` : 'sin referencia';
+      return `<div class="urow curso" id="row_${cssId(it.unidad_id)}">
+        <div style="flex:1">
+          <div class="uid">${esc(it.unidad_id)}</div>
+          <div class="usub">${esc(nom)} · ${esc(it.ot)} · <span class="ref">${refTxt}</span></div>
+          <div class="prog"><i id="p_${cssId(it.unidad_id)}"></i></div>
+        </div>
         <div class="crono" id="c_${cssId(it.unidad_id)}">0:00</div></div>`;
     }).join('');
 
