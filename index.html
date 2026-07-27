@@ -59,6 +59,13 @@ main{padding:20px;max-width:900px;margin:0 auto}
 
 /* ---------- operario ---------- */
 .paro-banner{background:var(--red);color:#fff;padding:14px 18px;border-radius:14px;display:flex;align-items:center;justify-content:space-between;font-size:16px;margin-bottom:16px}
+.turno-bar{margin-bottom:16px}
+.btn-turno{width:100%;background:var(--green);color:#fff;border-radius:14px;padding:16px;font-size:17px;font-weight:800}
+.turno-on{background:var(--ink);color:#fff;border-radius:16px;padding:14px 18px;display:flex;align-items:center;justify-content:space-between;gap:12px}
+.turno-lbl{font-size:10px;letter-spacing:1.5px;color:#B7B1A6}
+.turno-time{font-size:26px;font-weight:800;line-height:1.1}
+.turno-sub{font-size:12px;color:#C9C4BA;margin-top:2px}
+.btn-turno-fin{background:rgba(255,255,255,.12);color:#fff;border-radius:12px;padding:12px 16px;font-weight:700;white-space:nowrap}
 .paro-banner button{background:#fff;color:var(--red);border-radius:10px;padding:9px 16px;font-weight:700}
 .scan-card{background:var(--surf);border:1px solid var(--border);border-radius:18px;padding:16px;box-shadow:0 6px 18px rgba(30,25,20,.05)}
 #reader{position:relative;width:100%;max-width:380px;margin:0 auto 12px;border-radius:14px;overflow:hidden;background:#000}
@@ -168,6 +175,21 @@ main{padding:20px;max-width:900px;margin:0 auto}
 
   <!-- vista operario -->
   <main id="viewOperario" class="hidden">
+    <!-- barra de turno -->
+    <div id="turnoBar" class="turno-bar">
+      <div id="turnoOff" class="hidden">
+        <button class="btn-turno" onclick="Op.comenzarTurno()">▶ Comenzar turno</button>
+      </div>
+      <div id="turnoOn" class="hidden turno-on">
+        <div>
+          <div class="turno-lbl">TURNO EN CURSO</div>
+          <div class="turno-time"><span id="turnoCrono">0:00</span></div>
+          <div class="turno-sub"><span id="turnoProd">Productivo 0:00</span> · <span id="turnoOcup">—</span></div>
+        </div>
+        <button class="btn-turno-fin" onclick="Op.finalizarTurno()">■ Finalizar turno</button>
+      </div>
+    </div>
+
     <!-- barra de parada -->
     <div id="paroBanner" class="paro-banner hidden">
       <div>⏸ <b id="paroMotivo">Parada</b> · <span id="paroTiempo">0:00</span></div>
@@ -400,18 +422,65 @@ const Op = {
   user:null, enCurso:new Map(), ultimas:[], hechasHoy:0, duracionesHoy:[],
   paro:null, paroInicio:null, prodMap:{}, avgCache:{}, cam:null, camOn:false,
   lastScan:{code:null, t:0}, ticking:false,
+  turno:null, turnoInicio:null, paradasSeg:0, cfg:{descanso_min:60},
 
   async init(u){
     this.user=u;
-    // productos (sku -> nombre)
+    try{
+      const {data:cfg}=await sb.from('config').select('descanso_min,hora_inicio,hora_fin').eq('id',1).single();
+      if(cfg) this.cfg=Object.assign(this.cfg,cfg);
+    }catch(e){}
     try{
       const {data:prods}=await sb.from('productos').select('sku,nombre');
       (prods||[]).forEach(p=>this.prodMap[p.sku]=p.nombre);
     }catch(e){}
+    await this.comprobarTurno();
     await this.reconstruir();
     await this.comprobarParadaActiva();
     if(!this.ticking){ this.ticking=true; setInterval(()=>this.tick(),1000); }
+    this.renderTurno();
     this.render();
+  },
+
+  // ---------- TURNO ----------
+  async comprobarTurno(){
+    try{
+      const {data}=await sb.from('turnos').select('id,inicio').eq('usuario_id',this.user.id).is('fin',null).order('inicio',{ascending:false}).limit(1);
+      if(data&&data.length){
+        this.turno=data[0]; this.turnoInicio=new Date(data[0].inicio).getTime();
+        // recomponer paradas acumuladas del turno (las ya cerradas)
+        const {data:pars}=await sb.from('paradas').select('inicio,fin').eq('usuario_id',this.user.id).gte('inicio',data[0].inicio);
+        this.paradasSeg=(pars||[]).filter(p=>p.fin).reduce((a,p)=>a+(new Date(p.fin)-new Date(p.inicio))/1000,0);
+      }
+    }catch(e){}
+  },
+  async comenzarTurno(){
+    try{
+      const {data}=await sb.from('turnos').insert({usuario_id:this.user.id}).select('id,inicio').single();
+      this.turno=data; this.turnoInicio=new Date(data.inicio).getTime(); this.paradasSeg=0;
+      toast('▶ Turno iniciado','ok'); beep(true);
+    }catch(e){ toast('No se pudo iniciar turno: '+e.message,'err'); }
+    this.renderTurno();
+  },
+  async finalizarTurno(){
+    if(!this.turno) return;
+    if(this.paro){ toast('Reanuda la parada antes de finalizar','err'); return; }
+    if(!confirm('¿Finalizar tu turno?')) return;
+    const fin=Date.now();
+    try{ await sb.from('turnos').update({fin:new Date().toISOString()}).eq('id',this.turno.id); }catch(e){}
+    const dur=(fin-this.turnoInicio)/1000;
+    const prod=Math.max(0,dur-this.paradasSeg);
+    const ocup=dur>0?Math.round(prod/dur*100):0;
+    alert(`Turno finalizado.\n\nTurno: ${fmtHM(dur)}\nParadas: ${fmtHM(this.paradasSeg)}\nProductivo: ${fmtHM(prod)}\nOcupación: ${ocup}%\nHechas: ${this.hechasHoy}`);
+    this.turno=null; this.turnoInicio=null; this.paradasSeg=0;
+    this.renderTurno();
+  },
+  renderTurno(){
+    const on=!!this.turno;
+    $('#turnoOn').classList.toggle('hidden',!on);
+    $('#turnoOff').classList.toggle('hidden',on);
+    // bloquear escaneo visualmente
+    $('#reader').closest('.scan-card').style.opacity = on? '1':'.5';
   },
 
   // reconstruye 'en curso' y 'hechas hoy' desde la BD (robusto a recargas)
@@ -459,6 +528,7 @@ const Op = {
   },
   async scan(code){
     code=String(code).trim().toUpperCase();
+    if(!this.turno){ toast('Comienza el turno primero','err'); beep(false); return; }
     if(this.paro){ toast('Hay una parada activa. Reanuda para seguir.','err'); beep(false); return; }
     if(this.enCurso.has(code)){ return this.finalizar(code); }
     return this.iniciar(code);
@@ -527,6 +597,7 @@ const Op = {
   async reanudar(){
     if(!this.paro) return;
     try{ await sb.from('paradas').update({fin:new Date().toISOString()}).eq('id',this.paro.id); }catch(e){}
+    if(this.turno && this.paroInicio){ this.paradasSeg += (Date.now()-this.paroInicio)/1000; }
     this.paro=null; this.paroInicio=null;
     $('#paroBanner').classList.add('hidden');
   },
@@ -564,6 +635,15 @@ const Op = {
     const now=Date.now();
     this.enCurso.forEach((it)=>{ const el=document.getElementById('c_'+cssId(it.unidad_id)); if(el) el.textContent=fmtDur((now-it.start)/1000); });
     if(this.paro){ $('#paroTiempo').textContent=fmtDur((now-this.paroInicio)/1000); }
+    if(this.turno){
+      const dur=(now-this.turnoInicio)/1000;
+      let paradas=this.paradasSeg + (this.paro? (now-this.paroInicio)/1000 : 0);
+      const prod=Math.max(0,dur-paradas);
+      const ocup=dur>0?Math.round(prod/dur*100):0;
+      $('#turnoCrono').textContent=fmtHM(dur);
+      $('#turnoProd').textContent='Productivo '+fmtHM(prod);
+      $('#turnoOcup').textContent='Ocupación '+ocup+'%';
+    }
   },
   render(){
     // KPIs
@@ -598,6 +678,7 @@ const Op = {
 };
 
 function fmtDur(s){s=Math.max(0,Math.floor(s));const m=Math.floor(s/60),ss=s%60;if(m>=60){const h=Math.floor(m/60);return h+':'+String(m%60).padStart(2,'0')+':'+String(ss).padStart(2,'0');}return m+':'+String(ss).padStart(2,'0');}
+function fmtHM(s){s=Math.max(0,Math.floor(s));const h=Math.floor(s/3600),m=Math.floor((s%3600)/60);return h>0?(h+'h '+String(m).padStart(2,'0')+'m'):(m+'m');}
 function cssId(s){return String(s).replace(/[^a-zA-Z0-9]/g,'_');}
 let _ac;
 function beep(ok,dbl){
@@ -730,6 +811,8 @@ const Enc = {
       const {data:ops}=await sb.from('usuarios').select('id,nombre').eq('rol','operario').eq('activo',true).order('nombre');
       const {data:evs}=await sb.from('fabricacion_eventos').select('unidad_id,sku,usuario_id,tipo,ts').gte('ts',hIso);
       const {data:pars}=await sb.from('paradas').select('usuario_id,motivo,inicio,fin').gte('inicio',hIso);
+      const {data:turs}=await sb.from('turnos').select('usuario_id,inicio,fin').gte('inicio',hIso);
+      const now=Date.now();
       this._ops=(ops||[]).map(o=>{
         const evO=(evs||[]).filter(e=>e.usuario_id===o.id);
         const byU={}; evO.forEach(e=>{(byU[e.unidad_id]=byU[e.unidad_id]||[]).push(e);});
@@ -744,7 +827,20 @@ const Enc = {
         const parosHoy=(pars||[]).filter(p=>p.usuario_id===o.id);
         const media=durs.length?durs.reduce((a,b)=>a+b,0)/durs.length:0;
         const uxh=media?Math.round(3600/media):0;
-        return {o,enCurso,hechas,media,uxh,paroAct,parosHoy};
+        // turno + ocupación
+        const turno=(turs||[]).filter(t=>t.usuario_id===o.id).sort((a,b)=>new Date(b.inicio)-new Date(a.inicio))[0];
+        let turnoDur=0, prodSeg=0, ocup=null, turnoAbierto=false;
+        if(turno){
+          const ini=new Date(turno.inicio).getTime();
+          const finT=turno.fin? new Date(turno.fin).getTime(): now;
+          turnoAbierto=!turno.fin;
+          turnoDur=(finT-ini)/1000;
+          let ps=parosHoy.filter(p=>new Date(p.inicio).getTime()>=ini)
+            .reduce((a,p)=>a+((p.fin?new Date(p.fin).getTime():now)-new Date(p.inicio).getTime())/1000,0);
+          prodSeg=Math.max(0,turnoDur-ps);
+          ocup=turnoDur>0?Math.round(prodSeg/turnoDur*100):0;
+        }
+        return {o,enCurso,hechas,media,uxh,paroAct,parosHoy,turnoDur,prodSeg,ocup,turnoAbierto};
       });
       this.renderOperarios();
     }catch(e){ $('#opsList').innerHTML='<div class="vacio">Error: '+esc(e.message)+'</div>'; }
@@ -757,9 +853,10 @@ const Enc = {
                : `<span class="badge off">Inactivo</span>`;
       const cur = x.enCurso.map(c=>`<span class="stat-chip" style="background:#F5E7DF;color:#B85C38">${esc(this.prodMap[c.sku]||c.sku)} · <span data-crono="${c.start}">0:00</span></span>`).join('');
       const parInfo = x.parosHoy.length? `Paradas hoy: ${x.parosHoy.length}`:'Sin paradas';
+      const turnoInfo = x.turnoDur? ` · Turno ${fmtHM(x.turnoDur)}${x.turnoAbierto?' (abierto)':''} · Ocup. ${x.ocup}%`:' · Sin turno';
       return `<div class="op-card ${x.paroAct?'paro':''}">
         <div class="op-head"><div class="op-name">${esc(x.o.nombre)}</div>${st}</div>
-        <div class="usub">Hechas hoy: <b>${x.hechas}</b> · ${x.uxh} uds/h · media ${x.media?fmtDur(x.media):'—'} · ${parInfo}</div>
+        <div class="usub">Hechas hoy: <b>${x.hechas}</b> · ${x.uxh} uds/h · media ${x.media?fmtDur(x.media):'—'} · ${parInfo}${turnoInfo}</div>
         ${cur?`<div style="margin-top:8px">${cur}</div>`:''}
       </div>`;
     }).join('');
