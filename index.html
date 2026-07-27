@@ -426,7 +426,7 @@ const Op = {
   user:null, enCurso:new Map(), ultimas:[], hechasHoy:0, duracionesHoy:[],
   paro:null, paroInicio:null, prodMap:{}, avgCache:{}, cam:null, camOn:false,
   lastScan:{code:null, t:0}, ticking:false,
-  turno:null, turnoInicio:null, paradasSeg:0, cfg:{descanso_min:60}, stdSku:{},
+  turno:null, turnoInicio:null, paradasSeg:0, cfg:{descanso_min:60}, stdSku:{}, provisional:new Set(),
 
   async init(u){
     this.user=u;
@@ -440,8 +440,12 @@ const Op = {
     }catch(e){}
     // tiempos estándar (mediana vigente por núcleo)
     try{
-      const {data:ts}=await sb.from('tiempos_sku').select('sku,mediana_seg').eq('vigente',true);
-      (ts||[]).forEach(t=>this.stdSku[t.sku]=Number(t.mediana_seg));
+      const semActual=isoWeekInfo(new Date()).label;
+      const {data:ts}=await sb.from('tiempos_sku').select('sku,mediana_seg,semana').eq('vigente',true);
+      (ts||[]).forEach(t=>{
+        this.stdSku[t.sku]=Number(t.mediana_seg);
+        if(t.semana===semActual) this.provisional.add(t.sku); // aprendido esta semana
+      });
     }catch(e){}
     await this.comprobarTurno();
     await this.reconstruir();
@@ -572,7 +576,33 @@ const Op = {
     this.ultimas.unshift({unidad_id:code,sku:it.sku,seg}); this.ultimas=this.ultimas.slice(0,10);
     this.avgCache[it.sku]=null; // recalcular media
     toast('✓ Terminada '+code+' ('+fmtDur(seg)+')','ok'); beep(true,true);
+    if(this.stdSku[it.sku]===undefined || this.provisional.has(it.sku)) this.aprenderTiempo(it.sku);
     this.render();
+  },
+
+  // aprende el tiempo de referencia si el núcleo aún no tiene estándar guardado
+  async aprenderTiempo(sku){
+    try{
+      const hoy=new Date(); hoy.setHours(0,0,0,0);
+      const {data}=await sb.from('fabricacion_eventos').select('unidad_id,tipo,ts').eq('sku',sku).gte('ts',hoy.toISOString());
+      const byU={}; (data||[]).forEach(e=>{(byU[e.unidad_id]=byU[e.unidad_id]||[]).push(e);});
+      const durs=[];
+      for(const uid in byU){
+        const a=byU[uid]; const i=a.find(x=>x.tipo==='inicio'); const f=a.find(x=>x.tipo==='fin');
+        if(i&&f){ const d=(new Date(f.ts)-new Date(i.ts))/1000; if(d>0&&d<86400) durs.push(d); }
+      }
+      const med=medianaJs(durs);
+      if(med>0){
+        const wk=isoWeekInfo(new Date());
+        await sb.from('tiempos_sku').update({vigente:false}).eq('sku',sku).eq('vigente',true);
+        await sb.from('tiempos_sku').upsert(
+          {sku, semana:wk.label, ini_semana:wk.monday, mediana_seg:Math.round(med), n_unidades:durs.length, vigente:true},
+          {onConflict:'sku,semana'});
+        this.stdSku[sku]=med;   // ya sirve de referencia al instante, para todos
+        this.provisional.add(sku);
+        this.render();
+      }
+    }catch(e){}
   },
 
   // media por SKU (núcleo) desde el histórico
@@ -704,6 +734,16 @@ const Op = {
 };
 
 function fmtDur(s){s=Math.max(0,Math.floor(s));const m=Math.floor(s/60),ss=s%60;if(m>=60){const h=Math.floor(m/60);return h+':'+String(m%60).padStart(2,'0')+':'+String(ss).padStart(2,'0');}return m+':'+String(ss).padStart(2,'0');}
+function medianaJs(a){if(!a.length)return 0;const v=[...a].sort((x,y)=>x-y);const n=v.length;return n%2?v[(n-1)/2]:(v[n/2-1]+v[n/2])/2;}
+function isoWeekInfo(d){
+  const dt=new Date(Date.UTC(d.getFullYear(),d.getMonth(),d.getDate()));
+  const day=(dt.getUTCDay()+6)%7; // lunes=0
+  const monday=new Date(dt); monday.setUTCDate(dt.getUTCDate()-day);
+  const thursday=new Date(monday); thursday.setUTCDate(monday.getUTCDate()+3);
+  const yStart=new Date(Date.UTC(thursday.getUTCFullYear(),0,1));
+  const week=Math.ceil((((thursday-yStart)/86400000)+1)/7);
+  return {label:thursday.getUTCFullYear()+'-W'+String(week).padStart(2,'0'), monday:monday.toISOString().slice(0,10)};
+}
 function fmtHM(s){s=Math.max(0,Math.floor(s));const h=Math.floor(s/3600),m=Math.floor((s%3600)/60);return h>0?(h+'h '+String(m).padStart(2,'0')+'m'):(m+'m');}
 function cssId(s){return String(s).replace(/[^a-zA-Z0-9]/g,'_');}
 let _ac;
