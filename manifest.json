@@ -1,0 +1,13 @@
+{
+  "name": "MOLYN Planta",
+  "short_name": "MOLYN",
+  "description": "Gestión de núcleos en planta",
+  "start_url": ".",
+  "display": "standalone",
+  "background_color": "#F4F2ED",
+  "theme_color": "#B85C38",
+  "icons": [
+    { "src": "molyn_icon_192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "molyn_icon_512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ]
+}

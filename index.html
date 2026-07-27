@@ -4,6 +4,10 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
 <title>MOLYN · Planta</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 512'%3E%3Crect width='512' height='512' rx='120' fill='%23B85C38'/%3E%3Ccircle cx='256' cy='256' r='150' fill='none' stroke='%23F4F2ED' stroke-width='10'/%3E%3Cpolyline points='204,308 204,190 256,248 308,190 308,308' fill='none' stroke='%23F4F2ED' stroke-width='36' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+<link rel="apple-touch-icon" href="molyn_icon_180.png">
+<meta name="theme-color" content="#B85C38">
+<link rel="manifest" href="manifest.json">
 <style>
 :root{
   --ink:#1B1A17; --bg:#F4F2ED; --surf:#FFFFFF; --surf2:#EAE7E0;
@@ -158,7 +162,15 @@ main{padding:20px;max-width:900px;margin:0 auto}
 
 <!-- ================= LOGIN ================= -->
 <section id="login">
-  <div class="logo"><h1>MOLYN</h1><p>PLANTA · NÚCLEOS</p></div>
+  <div class="logo">
+    <svg width="88" height="88" viewBox="0 0 512 512" style="margin-bottom:10px">
+      <rect width="512" height="512" rx="120" fill="#B85C38"/>
+      <circle cx="256" cy="256" r="150" fill="none" stroke="#F4F2ED" stroke-width="10"/>
+      <g fill="#F4F2ED"><rect x="237" y="64" width="38" height="44" rx="12" transform="rotate(0 256 256)"/><rect x="237" y="64" width="38" height="44" rx="12" transform="rotate(45 256 256)"/><rect x="237" y="64" width="38" height="44" rx="12" transform="rotate(90 256 256)"/><rect x="237" y="64" width="38" height="44" rx="12" transform="rotate(135 256 256)"/><rect x="237" y="64" width="38" height="44" rx="12" transform="rotate(180 256 256)"/><rect x="237" y="64" width="38" height="44" rx="12" transform="rotate(225 256 256)"/><rect x="237" y="64" width="38" height="44" rx="12" transform="rotate(270 256 256)"/><rect x="237" y="64" width="38" height="44" rx="12" transform="rotate(315 256 256)"/></g>
+      <polyline points="204,308 204,190 256,248 308,190 308,308" fill="none" stroke="#F4F2ED" stroke-width="36" stroke-linecap="round" stroke-linejoin="round"/>
+    </svg>
+    <h1>MOLYN</h1><p>PLANTA · NÚCLEOS</p>
+  </div>
 
   <div id="userStep" style="width:100%;display:flex;flex-direction:column;align-items:center;gap:16px">
     <div style="color:var(--muted);font-weight:600">Selecciona tu usuario</div>
@@ -179,7 +191,7 @@ main{padding:20px;max-width:900px;margin:0 auto}
 <!-- ================= APP (tras login) ================= -->
 <div id="app" class="hidden">
   <header>
-    <div class="brand">MOLYN · PLANTA</div>
+    <div class="brand"><svg width="26" height="26" viewBox="0 0 512 512" style="vertical-align:-6px;margin-right:8px"><rect width="512" height="512" rx="120" fill="#B85C38"/><circle cx="256" cy="256" r="150" fill="none" stroke="#F4F2ED" stroke-width="12"/><polyline points="204,308 204,190 256,248 308,190 308,308" fill="none" stroke="#F4F2ED" stroke-width="40" stroke-linecap="round" stroke-linejoin="round"/></svg>MOLYN · PLANTA</div>
     <div class="who"><span id="whoName">—</span><button class="logout" onclick="Login.logout()">Salir</button></div>
   </header>
   <div id="syncBar" class="syncbar ok">
