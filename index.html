@@ -415,8 +415,6 @@ async function readCached(k, fn){
 
 window.addEventListener('online', ()=>{ Q.badge(); Q.flush(); toast('Conexión recuperada','ok'); });
 window.addEventListener('offline', ()=>{ Q.badge(); toast('Sin conexión — se guardará local','err'); });
-Q.load();
-setInterval(()=>Q.flush(), 15000); // reintento periódico
 
 const $ = s => document.querySelector(s);
 function toast(msg, type){const t=$('#toast');t.textContent=msg;t.className='toast show '+(type||'');setTimeout(()=>t.className='toast',1800)}
@@ -1112,6 +1110,8 @@ const Enc = {
 };
 
 
+Q.load();
+setInterval(()=>Q.flush(), 15000);
 Login.init();
 </script>
 </body>

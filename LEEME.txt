@@ -1,0 +1,76 @@
+========================================================
+ MOLYN · Web de Planta (operarios + encargado)
+========================================================
+
+Un solo archivo (index.html). Se elige el rol al entrar según el
+usuario. Conecta con la MISMA Supabase que la web y el escritorio.
+
+--------------------------------------------------------
+ PASO 1 · Crear las tablas nuevas
+--------------------------------------------------------
+En Supabase -> SQL Editor, ejecuta:  webop_tablas.sql
+(crea: usuarios, fabricacion_eventos, paradas, ajustes_inventario;
+ no toca las tablas que ya tienes)
+
+Crea 3 usuarios de ejemplo:
+   Operario 1  PIN 1111
+   Operario 2  PIN 2222
+   Encargado   PIN 9999
+Cámbialos luego editando la tabla 'usuarios' en Supabase.
+
+--------------------------------------------------------
+ PASO 1b · Horario y turnos
+--------------------------------------------------------
+Ejecuta también  webop_turnos.sql  (añade el horario a 'config'
+y crea la tabla 'turnos'). El horario (hora inicio/fin y descanso)
+se define en la app de ESCRITORIO -> Configuración.
+
+--------------------------------------------------------
+ PASO 2 · Subir a GitHub Pages
+--------------------------------------------------------
+1) Crea un repositorio (o usa uno existente).
+2) Sube 'index.html' a la raíz.
+3) Settings -> Pages -> Branch: main / root -> Save.
+4) A los minutos tendrás la URL pública:
+      https://TU_USUARIO.github.io/TU_REPO/
+5) Abre esa URL en la tablet/móvil de planta.
+
+IMPORTANTE (cámara QR):
+La cámara solo funciona en HTTPS. GitHub Pages ya sirve por HTTPS,
+así que funcionará. En local (file://) la cámara no arranca.
+
+--------------------------------------------------------
+ ESTADO
+--------------------------------------------------------
+HECHO   Login por usuario + PIN, selección de rol.
+        Enrutado a vista Operario / Encargado.
+        VISTA OPERARIO completa:
+          - Escaneo QR (cámara) + código manual, ambos visibles.
+          - Solo unidades 'pendientes'; mismo QR inicia, mismo QR finaliza.
+          - Multi-cronómetro (varias unidades a la vez).
+          - Al finalizar: unidad pasa a stock + guarda tiempo (evento).
+          - Paradas con motivo que BLOQUEAN el escaneo hasta reanudar.
+          - KPIs: hechas hoy, uds/hora, en curso; media por núcleo.
+          - Se reconstruye al recargar (lee eventos de la BD).
+
+PRÓXIMO (siguientes entregas):
+  ENCARGADO  Consumo, stock, ritmo del operario, inventario con
+             aprobación a oficina, imprimir etiquetas, ver partes del día.
+
+--------------------------------------------------------
+ FUNCIONA SIN CONEXIÓN (offline-first)
+--------------------------------------------------------
+Cada gesto del operario (iniciar/finalizar unidad, parada, turno) y el
+consumo del encargado se guardan PRIMERO en la tablet, con su hora real,
+y se envían solos cuando vuelve la red. Barra de estado arriba:
+  verde = conectado · naranja = sin conexión / pendientes
+  botón "Sincronizar ahora" para forzar el envío.
+Las consultas usan lo último cacheado si no hay red. Si se recarga la
+tablet sin conexión, recupera lo que tenía en curso desde la cola local.
+
+--------------------------------------------------------
+ NOTA
+--------------------------------------------------------
+La librería de Supabase se carga desde jsdelivr (CDN). Si la red de
+planta bloquea CDNs, se puede incrustar la librería en el propio
+index.html; avísame y lo dejo autocontenido.
