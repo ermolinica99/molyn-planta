@@ -22,6 +22,12 @@ header .brand{font-weight:800;letter-spacing:1px;font-size:18px}
 header .who{font-size:13px;color:#C9C4BA;display:flex;align-items:center;gap:12px}
 header .who b{color:#fff}
 .logout{background:rgba(255,255,255,.1);color:#fff;border-radius:9px;padding:7px 12px;font-size:13px;font-weight:600}
+.syncbar{display:flex;align-items:center;gap:8px;padding:7px 16px;font-size:13px;font-weight:600;position:sticky;top:0;z-index:9}
+.syncbar #syncDot{font-size:11px}
+.syncbar.ok{background:#E6F0E9;color:var(--green)}
+.syncbar.off{background:#F7EDDF;color:#B07A1E}
+.syncbar.pend{background:#FDF0E9;color:var(--terra)}
+.syncbar button{margin-left:auto;background:var(--ink);color:#fff;border-radius:8px;padding:5px 12px;font-size:12px;font-weight:700}
 
 /* ---------- login ---------- */
 #login{min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:24px;gap:22px}
@@ -176,6 +182,11 @@ main{padding:20px;max-width:900px;margin:0 auto}
     <div class="brand">MOLYN · PLANTA</div>
     <div class="who"><span id="whoName">—</span><button class="logout" onclick="Login.logout()">Salir</button></div>
   </header>
+  <div id="syncBar" class="syncbar ok">
+    <span id="syncDot">●</span>
+    <span id="syncTxt">Conectado</span>
+    <button id="syncBtn" class="hidden" onclick="Q.flush(true)">Sincronizar ahora</button>
+  </div>
 
   <!-- vista operario -->
   <main id="viewOperario" class="hidden">
@@ -333,6 +344,68 @@ const SUPABASE_URL = "https://kmfdywyeesybqqfmfxys.supabase.co";
 const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImttZmR5d3llZXN5YnFxZm1meHlzIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQyNTA0MDMsImV4cCI6MjA5OTgyNjQwM30.dDrPPvqxqWBqFTA5FNC3YLAVK53nm8V2tn5JKHN9ve4";
 const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 
+// ============================================================
+//  OFFLINE-FIRST: cola local + caché + estado de red
+// ============================================================
+const Q = {
+  key:'molyn_queue', items:[], flushing:false,
+  load(){ try{ this.items=JSON.parse(localStorage.getItem(this.key)||'[]'); }catch(e){ this.items=[]; } this.badge(); },
+  save(){ try{ localStorage.setItem(this.key, JSON.stringify(this.items)); }catch(e){} this.badge(); },
+  // op: {t:'insert'|'update', table, payload, match?}
+  enqueue(op){ op._id=Date.now()+'_'+Math.random().toString(36).slice(2,7); this.items.push(op); this.save(); this.flush(); },
+  async exec(op){
+    if(op.t==='insert'){ const {error}=await sb.from(op.table).insert(op.payload); if(error) throw error; }
+    else if(op.t==='update'){
+      let q=sb.from(op.table).update(op.payload);
+      for(const k in op.match){ const v=op.match[k]; if(v===null) q=q.is(k,null); else q=q.eq(k,v); }
+      const {error}=await q; if(error) throw error;
+    }
+  },
+  async flush(manual){
+    if(this.flushing) return;
+    if(!navigator.onLine){ this.badge(); if(manual) toast('Sin conexión','err'); return; }
+    this.flushing=true; this.badge();
+    let ok=0;
+    while(this.items.length){
+      const op=this.items[0];
+      try{ await this.exec(op); this.items.shift(); this.save(); ok++; }
+      catch(e){ // error de red -> parar y reintentar luego; error de datos -> descartar para no atascar
+        if(e && (e.message||'').match(/Failed to fetch|NetworkError|network|fetch/i)){ break; }
+        else { this.items.shift(); this.save(); }
+      }
+    }
+    this.flushing=false; this.badge();
+    if(manual && ok) toast('✓ '+ok+' sincronizados','ok');
+  },
+  badge(){
+    const n=this.items.length, bar=$('#syncBar'), txt=$('#syncTxt'), btn=$('#syncBtn');
+    if(!bar) return;
+    if(!navigator.onLine){ bar.className='syncbar off'; txt.textContent='Sin conexión'+(n?' · '+n+' sin enviar':''); btn.classList.toggle('hidden', n===0); }
+    else if(n){ bar.className='syncbar pend'; txt.textContent=n+' pendientes de enviar'; btn.classList.remove('hidden'); }
+    else { bar.className='syncbar ok'; txt.textContent='Conectado'; btn.classList.add('hidden'); }
+  }
+};
+// helpers de escritura que pasan por la cola
+function qInsert(table,payload){ Q.enqueue({t:'insert',table,payload}); }
+function qUpdate(table,match,payload){ Q.enqueue({t:'update',table,match,payload}); }
+
+// caché de lecturas (para consultas offline)
+const Cache={
+  set(k,v){ try{ localStorage.setItem('molyn_c_'+k, JSON.stringify(v)); }catch(e){} },
+  get(k){ try{ return JSON.parse(localStorage.getItem('molyn_c_'+k)); }catch(e){ return null; } }
+};
+// lectura con fallback a caché
+async function readCached(k, fn){
+  try{ const v=await fn(); if(v!=null){ Cache.set(k,v); return v; } }
+  catch(e){}
+  const c=Cache.get(k); return c!=null? c : null;
+}
+
+window.addEventListener('online', ()=>{ Q.badge(); Q.flush(); toast('Conexión recuperada','ok'); });
+window.addEventListener('offline', ()=>{ Q.badge(); toast('Sin conexión — se guardará local','err'); });
+Q.load();
+setInterval(()=>Q.flush(), 15000); // reintento periódico
+
 const $ = s => document.querySelector(s);
 function toast(msg, type){const t=$('#toast');t.textContent=msg;t.className='toast show '+(type||'');setTimeout(()=>t.className='toast',1800)}
 
@@ -430,29 +503,24 @@ const Op = {
 
   async init(u){
     this.user=u;
-    try{
-      const {data:cfg}=await sb.from('config').select('descanso_min,hora_inicio,hora_fin').eq('id',1).single();
-      if(cfg) this.cfg=Object.assign(this.cfg,cfg);
-    }catch(e){}
-    try{
-      const {data:prods}=await sb.from('productos').select('sku,nombre');
-      (prods||[]).forEach(p=>this.prodMap[p.sku]=p.nombre);
-    }catch(e){}
-    // tiempos estándar (mediana vigente por núcleo)
-    try{
-      const semActual=isoWeekInfo(new Date()).label;
-      const {data:ts}=await sb.from('tiempos_sku').select('sku,mediana_seg,semana').eq('vigente',true);
-      (ts||[]).forEach(t=>{
-        this.stdSku[t.sku]=Number(t.mediana_seg);
-        if(t.semana===semActual) this.provisional.add(t.sku); // aprendido esta semana
-      });
-    }catch(e){}
+    const cfg=await readCached('config', async()=>{
+      const {data}=await sb.from('config').select('descanso_min,hora_inicio,hora_fin').eq('id',1).single(); return data;
+    });
+    if(cfg) this.cfg=Object.assign(this.cfg,cfg);
+    const prods=await readCached('productos', async()=>{
+      const {data}=await sb.from('productos').select('sku,nombre'); return data;
+    });
+    (prods||[]).forEach(p=>this.prodMap[p.sku]=p.nombre);
+    const ts=await readCached('tiempos_vig', async()=>{
+      const {data}=await sb.from('tiempos_sku').select('sku,mediana_seg,semana').eq('vigente',true); return data;
+    });
+    const semActual=isoWeekInfo(new Date()).label;
+    (ts||[]).forEach(t=>{ this.stdSku[t.sku]=Number(t.mediana_seg); if(t.semana===semActual) this.provisional.add(t.sku); });
     await this.comprobarTurno();
     await this.reconstruir();
     await this.comprobarParadaActiva();
     if(!this.ticking){ this.ticking=true; setInterval(()=>this.tick(),1000); }
-    this.renderTurno();
-    this.render();
+    this.renderTurno(); this.render(); Q.badge();
   },
 
   // ---------- TURNO ----------
@@ -468,11 +536,10 @@ const Op = {
     }catch(e){}
   },
   async comenzarTurno(){
-    try{
-      const {data}=await sb.from('turnos').insert({usuario_id:this.user.id}).select('id,inicio').single();
-      this.turno=data; this.turnoInicio=new Date(data.inicio).getTime(); this.paradasSeg=0;
-      toast('▶ Turno iniciado','ok'); beep(true);
-    }catch(e){ toast('No se pudo iniciar turno: '+e.message,'err'); }
+    const inicio=new Date().toISOString();
+    qInsert('turnos',{usuario_id:this.user.id, inicio});
+    this.turno={inicio}; this.turnoInicio=new Date(inicio).getTime(); this.paradasSeg=0;
+    toast('▶ Turno iniciado','ok'); beep(true);
     this.renderTurno();
   },
   async finalizarTurno(){
@@ -480,7 +547,8 @@ const Op = {
     if(this.paro){ toast('Reanuda la parada antes de finalizar','err'); return; }
     if(!confirm('¿Finalizar tu turno?')) return;
     const fin=Date.now();
-    try{ await sb.from('turnos').update({fin:new Date().toISOString()}).eq('id',this.turno.id); }catch(e){}
+    // cierra el turno abierto por usuario (sin depender de id del servidor)
+    qUpdate('turnos', {usuario_id:this.user.id, fin:null}, {fin:new Date().toISOString()});
     const dur=(fin-this.turnoInicio)/1000;
     const prod=Math.max(0,dur-this.paradasSeg);
     const ocup=dur>0?Math.round(prod/dur*100):0;
@@ -523,7 +591,21 @@ const Op = {
         });
       }
       this.ultimas=this.ultimas.slice(0,10);
-    }catch(e){ toast('Error cargando datos: '+e.message,'err'); }
+    }catch(e){ /* offline: reconstruimos solo con la cola */ }
+    // mezclar eventos aún en la cola local (hechos sin conexión)
+    try{
+      const qev=Q.items.filter(o=>o.t==='insert'&&o.table==='fabricacion_eventos'&&o.payload.usuario_id===this.user.id);
+      const inis=qev.filter(o=>o.payload.tipo==='inicio');
+      const fins=new Set(qev.filter(o=>o.payload.tipo==='fin').map(o=>o.payload.unidad_id));
+      inis.forEach(o=>{ const p=o.payload; if(!fins.has(p.unidad_id) && !this.enCurso.has(p.unidad_id)){
+        this.enCurso.set(p.unidad_id,{unidad_id:p.unidad_id,ot:p.ot,sku:p.sku,start:new Date(p.ts).getTime()});
+      }});
+      // turno/parada abiertos en cola
+      const tq=Q.items.filter(o=>o.table==='turnos'&&o.t==='insert'&&o.payload.usuario_id===this.user.id);
+      if(tq.length && !this.turno){ const p=tq[tq.length-1].payload; this.turno={inicio:p.inicio}; this.turnoInicio=new Date(p.inicio).getTime(); }
+      const pq=Q.items.filter(o=>o.table==='paradas'&&o.t==='insert'&&o.payload.usuario_id===this.user.id);
+      if(pq.length && !this.paro){ const p=pq[pq.length-1].payload; this.paro={motivo:p.motivo,inicio:p.inicio}; this.paroInicio=new Date(p.inicio).getTime(); this.mostrarParo(); }
+    }catch(e){}
   },
 
   async comprobarParadaActiva(){
@@ -547,36 +629,38 @@ const Op = {
     return this.iniciar(code);
   },
   async iniciar(code){
-    let u;
+    let u=null;
     try{
       const {data}=await sb.from('unidades').select('id,ot,sku,estado').eq('id',code).limit(1);
       u=data&&data[0];
-    }catch(e){ toast('Error: '+e.message,'err'); return; }
-    if(!u){ toast('Etiqueta no encontrada: '+code,'err'); beep(false); return; }
-    if(u.estado!=='pendiente'){
-      toast(u.estado==='stock'?'Esa unidad ya está fabricada':'Unidad '+u.estado+', no válida','err'); beep(false); return;
+    }catch(e){ u=null; } // sin conexión: seguimos en modo optimista
+    if(u){
+      if(u.estado!=='pendiente'){
+        toast(u.estado==='stock'?'Esa unidad ya está fabricada':'Unidad '+u.estado+', no válida','err'); beep(false); return;
+      }
+    }else{
+      // offline o no encontrada: aceptamos con los datos del código
+      u={id:code, ot:(code.split('-')[0]||''), sku:''};
     }
-    try{
-      await sb.from('fabricacion_eventos').insert({unidad_id:u.id,ot:u.ot,sku:u.sku,usuario_id:this.user.id,tipo:'inicio'});
-    }catch(e){ toast('No se pudo iniciar: '+e.message,'err'); return; }
-    this.enCurso.set(u.id,{unidad_id:u.id,ot:u.ot,sku:u.sku,start:Date.now()});
-    this.avgSku(u.sku); // precarga media
+    const ts=new Date().toISOString();
+    qInsert('fabricacion_eventos',{unidad_id:u.id,ot:u.ot,sku:u.sku,usuario_id:this.user.id,tipo:'inicio',ts});
+    this.enCurso.set(u.id,{unidad_id:u.id,ot:u.ot,sku:u.sku,start:new Date(ts).getTime()});
+    if(u.sku) this.avgSku(u.sku);
     toast('▶ Iniciada '+u.id,'ok'); beep(true);
     this.render();
   },
   async finalizar(code){
     const it=this.enCurso.get(code);
-    const seg=(Date.now()-it.start)/1000;
-    try{
-      await sb.from('fabricacion_eventos').insert({unidad_id:code,ot:it.ot,sku:it.sku,usuario_id:this.user.id,tipo:'fin'});
-      await sb.from('unidades').update({estado:'stock',fabricada_at:new Date().toISOString()}).eq('id',code);
-    }catch(e){ toast('No se pudo finalizar: '+e.message,'err'); return; }
+    const ts=new Date().toISOString();
+    const seg=(new Date(ts).getTime()-it.start)/1000;
+    qInsert('fabricacion_eventos',{unidad_id:code,ot:it.ot,sku:it.sku,usuario_id:this.user.id,tipo:'fin',ts});
+    qUpdate('unidades',{id:code},{estado:'stock',fabricada_at:ts});
     this.enCurso.delete(code);
     this.hechasHoy++; this.duracionesHoy.push(seg);
     this.ultimas.unshift({unidad_id:code,sku:it.sku,seg}); this.ultimas=this.ultimas.slice(0,10);
-    this.avgCache[it.sku]=null; // recalcular media
+    this.avgCache[it.sku]=null;
     toast('✓ Terminada '+code+' ('+fmtDur(seg)+')','ok'); beep(true,true);
-    if(this.stdSku[it.sku]===undefined || this.provisional.has(it.sku)) this.aprenderTiempo(it.sku);
+    if(it.sku && (this.stdSku[it.sku]===undefined || this.provisional.has(it.sku))) this.aprenderTiempo(it.sku);
     this.render();
   },
 
@@ -628,14 +712,13 @@ const Op = {
   cerrarModal(){ $('#paroModal').classList.add('hidden'); },
   async iniciarParada(motivo){
     this.cerrarModal();
-    try{
-      const {data}=await sb.from('paradas').insert({usuario_id:this.user.id,motivo}).select('id,motivo,inicio').single();
-      this.paro=data; this.paroInicio=new Date(data.inicio).getTime(); this.mostrarParo();
-    }catch(e){ toast('No se pudo registrar la parada: '+e.message,'err'); }
+    const inicio=new Date().toISOString();
+    qInsert('paradas',{usuario_id:this.user.id, motivo, inicio});
+    this.paro={motivo, inicio}; this.paroInicio=new Date(inicio).getTime(); this.mostrarParo();
   },
   async reanudar(){
     if(!this.paro) return;
-    try{ await sb.from('paradas').update({fin:new Date().toISOString()}).eq('id',this.paro.id); }catch(e){}
+    qUpdate('paradas', {usuario_id:this.user.id, fin:null}, {fin:new Date().toISOString()});
     if(this.turno && this.paroInicio){ this.paradasSeg += (Date.now()-this.paroInicio)/1000; }
     this.paro=null; this.paroInicio=null;
     $('#paroBanner').classList.add('hidden');
@@ -798,12 +881,16 @@ const Enc = {
   async addCart(code){
     code=String(code).trim().toUpperCase();
     if(this.cart.has(code)){ toast('Ya está en la lista','err'); return; }
-    let u;
+    let u=null;
     try{ const {data}=await sb.from('unidades').select('id,ot,sku,estado').eq('id',code).limit(1); u=data&&data[0]; }
-    catch(e){ toast('Error: '+e.message,'err'); return; }
-    if(!u){ toast('Etiqueta no encontrada','err'); beep(false); return; }
-    if(u.estado!=='stock'){ toast(u.estado==='pendiente'?'Aún no fabricada':'No consumible ('+u.estado+')','err'); beep(false); return; }
-    this.cart.set(code,{unidad_id:code,ot:u.ot,sku:u.sku,nombre:this.prodMap[u.sku]||u.sku});
+    catch(e){ u=null; }
+    if(u){
+      if(u.estado!=='stock'){ toast(u.estado==='pendiente'?'Aún no fabricada':'No consumible ('+u.estado+')','err'); beep(false); return; }
+      this.cart.set(code,{unidad_id:code,ot:u.ot,sku:u.sku,nombre:this.prodMap[u.sku]||u.sku});
+    }else{
+      // offline o no verificable: se añade en modo optimista
+      this.cart.set(code,{unidad_id:code,ot:(code.split('-')[0]||''),sku:'',nombre:code});
+    }
     beep(true); this.renderCart();
   },
   removeCart(code){ this.cart.delete(code); this.renderCart(); },
@@ -822,16 +909,15 @@ const Enc = {
     if(!arr.length) return;
     if(!confirm(`¿Consumir ${arr.length} núcleos?`)) return;
     const now=new Date().toISOString();
-    try{
-      for(const it of arr){
-        await sb.from('unidades').update({estado:'consumida',consumida_at:now}).eq('id',it.unidad_id);
-        await this.consumirReserva(it.sku);
-      }
-      toast('✓ '+arr.length+' consumidos','ok'); beep(true,true);
-      this.cart.clear(); this.renderCart();
-    }catch(e){ toast('Error al consumir: '+e.message,'err'); }
+    for(const it of arr){
+      qUpdate('unidades',{id:it.unidad_id},{estado:'consumida',consumida_at:now});
+      this.consumirReserva(it.sku);  // best-effort (solo si hay red)
+    }
+    toast('✓ '+arr.length+' en cola de consumo','ok'); beep(true,true);
+    this.cart.clear(); this.renderCart();
   },
   async consumirReserva(sku){
+    if(!navigator.onLine) return;  // se omite el descuento de reserva offline
     try{
       const {data}=await sb.from('reservas').select('id,cantidad').eq('sku',sku).eq('estado','pendiente').order('created_at').order('id').limit(1);
       const r=data&&data[0]; if(!r) return;
