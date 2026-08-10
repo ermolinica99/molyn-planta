@@ -91,6 +91,7 @@ main{padding:20px;max-width:900px;margin:0 auto}
 .serie .stepper button{width:46px;height:46px;border-radius:12px;border:1.5px solid var(--border);background:var(--surf2);font-size:22px;font-weight:800;cursor:pointer}
 .serie .stepper .num{font-size:30px;font-weight:800;min-width:60px;text-align:center;font-variant-numeric:tabular-nums}
 .serie .sconfirm{width:100%;margin-top:10px;border:none;border-radius:12px;padding:14px;font-weight:800;font-size:15px;background:var(--green);color:#fff;cursor:pointer}
+.btnfin{border:none;border-radius:10px;padding:10px 14px;font-weight:800;font-size:14px;background:var(--green);color:#fff;cursor:pointer;white-space:nowrap}
 #reader{position:relative;width:100%;max-width:380px;margin:0 auto 12px;border-radius:14px;overflow:hidden;background:#000}
 #reader:empty{display:none}
 #reader:not(:empty){height:300px}
@@ -531,13 +532,14 @@ const Op = {
   async init(u){
     this.user=u;
     const cfg=await readCached('config', async()=>{
-      const {data}=await sb.from('config').select('descanso_min,hora_inicio,hora_fin').eq('id',1).single(); return data;
+      const {data}=await sb.from('config').select('descanso_min,hora_inicio,hora_fin,umbral_semanal,dias_historico').eq('id',1).single(); return data;
     });
     if(cfg) this.cfg=Object.assign(this.cfg,cfg);
     const prods=await readCached('productos', async()=>{
       const {data}=await sb.from('productos').select('sku,nombre'); return data;
     });
     (prods||[]).forEach(p=>this.prodMap[p.sku]=p.nombre);
+    await this.clasificarNucleos();
     const ts=await readCached('tiempos_vig', async()=>{
       const {data}=await sb.from('tiempos_sku').select('sku,mediana_seg,semana').eq('vigente',true); return data;
     });
@@ -549,6 +551,30 @@ const Op = {
     if(!this.ticking){ this.ticking=true; setInterval(()=>this.tick(),1000); }
     this.renderTurno(); this.render(); Q.badge();
   },
+
+  // clasifica cada núcleo como 'diario' (stock) o 'personalizado', igual que el dashboard:
+  // personalizado = consumo/día medio < umbral. Sin consumo => personalizado.
+  async clasificarNucleos(){
+    this.tipoSku={};
+    const umbral=Number(this.cfg.umbral_semanal!=null?this.cfg.umbral_semanal:1);
+    const diasHist=Number(this.cfg.dias_historico||30);
+    try{
+      const {data}=await sb.from('unidades').select('sku,consumida_at').eq('estado','consumida');
+      const byS={};
+      (data||[]).forEach(u=>{
+        if(!u.consumida_at) return;
+        const day=u.consumida_at.slice(0,10);
+        byS[u.sku]=byS[u.sku]||{}; byS[u.sku][day]=(byS[u.sku][day]||0)+1;
+      });
+      for(const sku in byS){
+        const days=Object.keys(byS[sku]).sort().reverse().slice(0,diasHist);
+        const tot=days.reduce((a,d)=>a+byS[sku][d],0);
+        const D=days.length? tot/days.length : 0;
+        this.tipoSku[sku]= D<umbral ? 'personalizado' : 'diario';
+      }
+    }catch(e){}
+  },
+  esDiario(sku){ return this.tipoSku && this.tipoSku[sku]==='diario'; },
 
   // ---------- TURNO ----------
   async comprobarTurno(){
@@ -670,14 +696,14 @@ const Op = {
       // offline o no encontrada: aceptamos con los datos del código
       u={id:code, ot:(code.split('-')[0]||''), sku:''};
     }
-    // ¿personalizado (1 ud) o stock (lote)? -> por la cantidad de la OT
-    let cantidad=1;
+    // completar sku/nombre desde la orden si falta (offline puede venir vacío)
     try{
-      const {data:od}=await sb.from('ordenes').select('cantidad,nombre,sku').eq('ot',u.ot).limit(1);
-      if(od&&od[0]){ cantidad=Number(od[0].cantidad)||1; if(!u.sku && od[0].sku) u.sku=od[0].sku; u._nombre=od[0].nombre; }
+      const {data:od}=await sb.from('ordenes').select('nombre,sku').eq('ot',u.ot).limit(1);
+      if(od&&od[0]){ if(!u.sku && od[0].sku) u.sku=od[0].sku; u._nombre=od[0].nombre; }
     }catch(e){}
-    if(cantidad>1){ return this.iniciarSerie(u); }
-    // ---- PERSONALIZADO: una a una (como siempre) ----
+    // DIARIO (stock) -> serie con botones ; PERSONALIZADO -> una a una
+    if(this.esDiario(u.sku)){ return this.iniciarSerie(u); }
+    // ---- PERSONALIZADO: una a una ----
     const ts=new Date().toISOString();
     qInsert('fabricacion_eventos',{unidad_id:u.id,ot:u.ot,sku:u.sku,usuario_id:this.user.id,tipo:'inicio',ts});
     this.enCurso.set(u.id,{unidad_id:u.id,ot:u.ot,sku:u.sku,start:new Date(ts).getTime()});
@@ -909,7 +935,10 @@ const Op = {
           <div class="usub">${esc(nom)} · ${esc(it.ot)} · <span class="ref">${refTxt}</span></div>
           <div class="prog"><i id="p_${cssId(it.unidad_id)}"></i></div>
         </div>
-        <div class="crono" id="c_${cssId(it.unidad_id)}">0:00</div></div>`;
+        <div style="display:flex;align-items:center;gap:10px">
+          <div class="crono" id="c_${cssId(it.unidad_id)}">0:00</div>
+          <button class="btnfin" onclick="Op.finalizar('${it.unidad_id}')">✓ Terminar</button>
+        </div></div>`;
     }).join('');
 
     // últimas
