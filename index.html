@@ -880,7 +880,6 @@ const Op = {
       }
     });
     if(this.paro){ $('#paroTiempo').textContent=fmtDur((now-this.paroInicio)/1000); }
-    if(this.serie){ const el=document.getElementById('serieCrono'); if(el) el.textContent=fmtDur((now-this.serie.start)/1000); }
     if(this.turno){
       const dur=(now-this.turnoInicio)/1000;
       let paradas=this.paradasSeg + (this.paro? (now-this.paroInicio)/1000 : 0);
@@ -900,7 +899,6 @@ const Op = {
         <span class="stag">STOCK · LOTE</span>
         <div class="snom">${esc(s.nombre)}</div>
         <div class="ssub">${esc(s.ot)} · ${n} uds pendientes</div>
-        <div class="scrono" id="serieCrono">0:00</div>
         <div class="sbtns">
           <button class="btodas" onclick="Op.terminarSerie(${n})">✓ Terminar todas (${n})</button>
           <button class="balgunas" onclick="Op.toggleAlgunas()">Terminar algunas</button>
