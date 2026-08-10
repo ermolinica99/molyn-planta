@@ -78,6 +78,19 @@ main{padding:20px;max-width:900px;margin:0 auto}
 .btn-turno-fin{background:rgba(255,255,255,.12);color:#fff;border-radius:12px;padding:12px 16px;font-weight:700;white-space:nowrap}
 .paro-banner button{background:#fff;color:var(--red);border-radius:10px;padding:9px 16px;font-weight:700}
 .scan-card{background:var(--surf);border:1px solid var(--border);border-radius:18px;padding:16px;box-shadow:0 6px 18px rgba(30,25,20,.05)}
+.serie{background:var(--surf);border:2px solid var(--terra);border-radius:18px;padding:16px;margin-bottom:14px;box-shadow:0 6px 20px rgba(184,92,56,.12)}
+.serie .stag{display:inline-block;background:var(--terra);color:#fff;font-size:11px;font-weight:800;letter-spacing:1px;padding:3px 10px;border-radius:20px}
+.serie .snom{font-weight:800;font-size:17px;margin:8px 0 2px}
+.serie .ssub{color:var(--muted);font-size:13px}
+.serie .scrono{font-size:34px;font-weight:800;font-variant-numeric:tabular-nums;margin:6px 0 2px}
+.serie .sbtns{display:flex;gap:10px;margin-top:12px;flex-wrap:wrap}
+.serie .sbtns button{flex:1;min-width:130px;border:none;border-radius:12px;padding:14px;font-weight:800;font-size:15px;cursor:pointer}
+.serie .btodas{background:var(--green);color:#fff}
+.serie .balgunas{background:var(--surf2);color:var(--ink);border:1.5px solid var(--border)!important}
+.serie .stepper{display:flex;align-items:center;gap:12px;margin-top:12px;justify-content:center}
+.serie .stepper button{width:46px;height:46px;border-radius:12px;border:1.5px solid var(--border);background:var(--surf2);font-size:22px;font-weight:800;cursor:pointer}
+.serie .stepper .num{font-size:30px;font-weight:800;min-width:60px;text-align:center;font-variant-numeric:tabular-nums}
+.serie .sconfirm{width:100%;margin-top:10px;border:none;border-radius:12px;padding:14px;font-weight:800;font-size:15px;background:var(--green);color:#fff;cursor:pointer}
 #reader{position:relative;width:100%;max-width:380px;margin:0 auto 12px;border-radius:14px;overflow:hidden;background:#000}
 #reader:empty{display:none}
 #reader:not(:empty){height:300px}
@@ -242,6 +255,9 @@ main{padding:20px;max-width:900px;margin:0 auto}
       <div class="kbox"><div class="kn" id="kUxh">0</div><div class="kl">UDS/HORA</div></div>
       <div class="kbox"><div class="kn" id="kEnCurso">0</div><div class="kl">EN CURSO</div></div>
     </div>
+
+    <!-- serie de stock activa -->
+    <div id="serieBox"></div>
 
     <!-- en curso -->
     <h3 class="sec">En fabricación <span id="curCount" class="pill-count">0</span></h3>
@@ -507,6 +523,7 @@ function esc(s){return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;',
 // ============================================================
 const Op = {
   user:null, enCurso:new Map(), ultimas:[], hechasHoy:0, duracionesHoy:[],
+  serie:null, serieSel:0,
   paro:null, paroInicio:null, prodMap:{}, avgCache:{}, cam:null, camOn:false,
   lastScan:{code:null, t:0}, ticking:false,
   turno:null, turnoInicio:null, paradasSeg:0, cfg:{descanso_min:60}, stdSku:{}, provisional:new Set(),
@@ -576,7 +593,7 @@ const Op = {
 
   // reconstruye 'en curso' y 'hechas hoy' desde la BD (robusto a recargas)
   async reconstruir(){
-    this.enCurso.clear(); this.hechasHoy=0; this.duracionesHoy=[]; this.ultimas=[];
+    this.enCurso.clear(); this.hechasHoy=0; this.duracionesHoy=[]; this.ultimas=[]; this.serie=null; this.__algunas=false;
     try{
       const {data:evs}=await sb.from('fabricacion_eventos')
         .select('unidad_id,ot,sku,tipo,ts').eq('usuario_id',this.user.id).order('ts');
@@ -635,6 +652,7 @@ const Op = {
     code=String(code).trim().toUpperCase();
     if(!this.turno){ toast('Comienza el turno primero','err'); beep(false); return; }
     if(this.paro){ toast('Hay una parada activa. Reanuda para seguir.','err'); beep(false); return; }
+    if(this.serie){ toast('Tienes una serie de stock en curso. Usa los botones para cerrarla.','err'); beep(false); return; }
     if(this.enCurso.has(code)){ return this.finalizar(code); }
     return this.iniciar(code);
   },
@@ -652,6 +670,14 @@ const Op = {
       // offline o no encontrada: aceptamos con los datos del código
       u={id:code, ot:(code.split('-')[0]||''), sku:''};
     }
+    // ¿personalizado (1 ud) o stock (lote)? -> por la cantidad de la OT
+    let cantidad=1;
+    try{
+      const {data:od}=await sb.from('ordenes').select('cantidad,nombre,sku').eq('ot',u.ot).limit(1);
+      if(od&&od[0]){ cantidad=Number(od[0].cantidad)||1; if(!u.sku && od[0].sku) u.sku=od[0].sku; u._nombre=od[0].nombre; }
+    }catch(e){}
+    if(cantidad>1){ return this.iniciarSerie(u); }
+    // ---- PERSONALIZADO: una a una (como siempre) ----
     const ts=new Date().toISOString();
     qInsert('fabricacion_eventos',{unidad_id:u.id,ot:u.ot,sku:u.sku,usuario_id:this.user.id,tipo:'inicio',ts});
     this.enCurso.set(u.id,{unidad_id:u.id,ot:u.ot,sku:u.sku,start:new Date(ts).getTime()});
@@ -659,6 +685,53 @@ const Op = {
     toast('▶ Iniciada '+u.id,'ok'); beep(true);
     this.render();
   },
+
+  // ---- STOCK: arranca serie al escanear la primera ----
+  async iniciarSerie(u){
+    let pend=[];
+    try{
+      const {data}=await sb.from('unidades').select('id').eq('ot',u.ot).eq('estado','pendiente').order('id');
+      pend=(data||[]).map(x=>x.id);
+    }catch(e){ pend=[]; }
+    if(!pend.length) pend=[u.id]; // offline: al menos la escaneada
+    this.serie={ot:u.ot, sku:u.sku, nombre:(this.prodMap[u.sku]||u._nombre||u.sku), start:Date.now(), pendientes:pend};
+    this.serieSel=pend.length;
+    if(u.sku) this.avgSku(u.sku);
+    toast('▶ Serie STOCK · '+pend.length+' uds pendientes','ok'); beep(true);
+    this.render();
+  },
+  // terminar N unidades de la serie (reparte el tiempo total a partes iguales)
+  async terminarSerie(count){
+    const s=this.serie; if(!s) return;
+    count=Math.max(1, Math.min(count, s.pendientes.length));
+    const total=Math.max(1,(Date.now()-s.start)/1000);
+    const per=total/count;
+    const units=s.pendientes.slice(0,count);
+    units.forEach((uid,i)=>{
+      const iniTs=new Date(s.start + per*i*1000).toISOString();
+      const finTs=new Date(s.start + per*(i+1)*1000).toISOString();
+      qInsert('fabricacion_eventos',{unidad_id:uid,ot:s.ot,sku:s.sku,usuario_id:this.user.id,tipo:'inicio',ts:iniTs});
+      qInsert('fabricacion_eventos',{unidad_id:uid,ot:s.ot,sku:s.sku,usuario_id:this.user.id,tipo:'fin',ts:finTs});
+      qUpdate('unidades',{id:uid},{estado:'stock',fabricada_at:finTs});
+      this.hechasHoy++; this.duracionesHoy.push(per);
+      this.ultimas.unshift({unidad_id:uid,sku:s.sku,seg:per});
+    });
+    this.ultimas=this.ultimas.slice(0,10);
+    this.avgCache[s.sku]=null;
+    const sku=s.sku;
+    toast('✓ '+count+' uds terminadas · '+fmtDur(per)+' c/u','ok'); beep(true,true);
+    this.serie=null; this.serieSel=0;
+    if(sku && (this.stdSku[sku]===undefined || this.provisional.has(sku))) this.aprenderTiempo(sku);
+    this.render();
+  },
+  cancelarSerie(){
+    if(!this.serie) return;
+    if(!confirm('¿Descartar la serie sin registrar nada?')) return;
+    this.serie=null; this.serieSel=0; this.render();
+  },
+  serieMas(){ if(this.serie){ this.serieSel=Math.min(this.serie.pendientes.length, this.serieSel+1); this.render(); } },
+  serieMenos(){ if(this.serie){ this.serieSel=Math.max(1, this.serieSel-1); this.render(); } },
+  toggleAlgunas(){ if(!this.serie) return; this.__algunas=!this.__algunas; if(this.__algunas){ const n=this.serie.pendientes.length; this.serieSel=Math.max(1,n-1); } this.render(); },
   async finalizar(code){
     const it=this.enCurso.get(code);
     const ts=new Date().toISOString();
@@ -781,6 +854,7 @@ const Op = {
       }
     });
     if(this.paro){ $('#paroTiempo').textContent=fmtDur((now-this.paroInicio)/1000); }
+    if(this.serie){ const el=document.getElementById('serieCrono'); if(el) el.textContent=fmtDur((now-this.serie.start)/1000); }
     if(this.turno){
       const dur=(now-this.turnoInicio)/1000;
       let paradas=this.paradasSeg + (this.paro? (now-this.paroInicio)/1000 : 0);
@@ -792,6 +866,29 @@ const Op = {
     }
   },
   render(){
+    // serie de stock
+    const sb2=$('#serieBox');
+    if(this.serie){
+      const s=this.serie, n=s.pendientes.length, sel=Math.min(this.serieSel||n, n);
+      sb2.innerHTML=`<div class="serie">
+        <span class="stag">STOCK · LOTE</span>
+        <div class="snom">${esc(s.nombre)}</div>
+        <div class="ssub">${esc(s.ot)} · ${n} uds pendientes</div>
+        <div class="scrono" id="serieCrono">0:00</div>
+        <div class="sbtns">
+          <button class="btodas" onclick="Op.terminarSerie(${n})">✓ Terminar todas (${n})</button>
+          <button class="balgunas" onclick="Op.toggleAlgunas()">Terminar algunas</button>
+        </div>
+        ${this.__algunas?`<div class="stepper">
+            <button onclick="Op.serieMenos()">−</button>
+            <div class="num">${sel}</div>
+            <button onclick="Op.serieMas()">+</button>
+          </div>
+          <button class="sconfirm" onclick="Op.__algunas=false;Op.terminarSerie(${sel})">Terminar ${sel} uds</button>`:''}
+        <div style="text-align:center;margin-top:10px"><a href="#" onclick="event.preventDefault();Op.cancelarSerie()" style="color:var(--muted);font-size:13px">Descartar serie</a></div>
+      </div>`;
+    } else { sb2.innerHTML=''; this.__algunas=false; }
+
     // KPIs
     $('#kHoy').textContent=this.hechasHoy;
     $('#kEnCurso').textContent=this.enCurso.size;
