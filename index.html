@@ -302,6 +302,7 @@ main{padding:20px;max-width:900px;margin:0 auto}
       <button data-sec="operarios" onclick="Enc.go('operarios')">Operarios</button>
       <button data-sec="inventario" onclick="Enc.go('inventario')">Inventario</button>
       <button data-sec="partes" onclick="Enc.go('partes')">Partes</button>
+      <button data-sec="lotes" onclick="Enc.go('lotes')">Lotes</button>
     </div>
 
     <!-- CONSUMO -->
@@ -371,6 +372,14 @@ main{padding:20px;max-width:900px;margin:0 auto}
       <h3 class="sec">Fabricadas / Consumidas ese día</h3>
       <div id="parteMov" class="lista"></div>
       <div id="parteMovVacio" class="vacio">Sin movimientos ese día.</div>
+    </section>
+
+    <!-- LOTES -->
+    <section id="secLotes" class="enc-sec hidden">
+      <div class="row-top"><h3 class="sec">Lote de fabricación por programa</h3><button class="btn-ghost sm" onclick="Enc.loadLotes()">↻</button></div>
+      <div class="usub" style="margin-bottom:12px">Unidades que se fabrican por lote de cada programa. Los programas se leen del catálogo (si añades uno nuevo, aparece solo).</div>
+      <div id="lotesList" class="lista"></div>
+      <button id="lotesSave" class="btn-terra" style="margin-top:14px" onclick="Enc.saveLotes()">Guardar lotes</button>
     </section>
   </main>
 </div>
@@ -1040,7 +1049,7 @@ const Enc = {
   go(sec){
     this.sec=sec;
     document.querySelectorAll('#encNav button').forEach(b=>b.classList.toggle('on', b.dataset.sec===sec));
-    ['consumo','stock','operarios','inventario','partes'].forEach(s=>{
+    ['consumo','stock','operarios','inventario','partes','lotes'].forEach(s=>{
       $('#sec'+s.charAt(0).toUpperCase()+s.slice(1)).classList.toggle('hidden', s!==sec);
     });
     if(sec!=='consumo' && this.camOn) this.stopCam();
@@ -1048,6 +1057,7 @@ const Enc = {
     if(sec==='operarios') this.loadOperarios();
     if(sec==='inventario') this.loadAjustes();
     if(sec==='partes') this.loadPartes();
+    if(sec==='lotes') this.loadLotes();
   },
 
   // ---------- CONSUMO (carrito) ----------
@@ -1275,6 +1285,36 @@ const Enc = {
     }catch(e){ toast('Error partes: '+e.message,'err'); }
   },
 
+  // ---------- LOTES por programa ----------
+  async loadLotes(){
+    $('#lotesList').innerHTML='<div class="vacio">Cargando…</div>';
+    try{
+      // programas del catálogo (dinámico)
+      const {data:prods}=await sb.from('productos').select('sku,descripcion');
+      const progs=[...new Set((prods||[]).map(p=>{ const m=(p.descripcion||'').match(/\s*(N\d+)/); return m?m[1]:null; }).filter(Boolean))]
+        .sort((a,b)=>a.length-b.length||a.localeCompare(b));
+      // valores guardados
+      let lotes={};
+      try{ const {data:lt}=await sb.from('lotes_programa').select('programa,lote'); (lt||[]).forEach(r=>lotes[r.programa]=r.lote); }catch(e){}
+      const nombres={N001:'Extra Firm',N002:'040',N003:'030',N004:'V50',N005:'Medium',N006:'V65/32',N007:'V65/40',N008:'V80 Soft',N009:'V80/40',N010:'Abatible',N011:'Kids',N012:'Articulado'};
+      $('#lotesList').innerHTML=progs.map(p=>{
+        const val=lotes[p]!=null?lotes[p]:10;
+        const nom=nombres[p]?' · '+nombres[p]:'';
+        return `<div class="urow"><div><div class="uid">${esc(p)}</div><div class="usub">${esc(nom.replace(/^ · /,''))}</div></div>
+          <input type="number" min="1" max="9999" value="${val}" data-prog="${esc(p)}" class="loteInput" style="width:90px;padding:8px;border:1px solid var(--border);border-radius:8px;font-weight:800;text-align:center"></div>`;
+      }).join('');
+      if(!progs.length) $('#lotesList').innerHTML='<div class="vacio">No hay programas en el catálogo.</div>';
+    }catch(e){ $('#lotesList').innerHTML='<div class="vacio">Error: '+esc(e.message)+'</div>'; }
+  },
+  async saveLotes(){
+    const filas=[...document.querySelectorAll('#lotesList .loteInput')].map(i=>({programa:i.dataset.prog, lote:Math.max(1,parseInt(i.value)||10)}));
+    if(!filas.length) return;
+    try{
+      const {error}=await sb.from('lotes_programa').upsert(filas,{onConflict:'programa'});
+      if(error) throw error;
+      toast('✓ Lotes guardados','ok');
+    }catch(e){ toast('Error al guardar: '+(e.message||e),'err'); }
+  },
   // ---------- cámara ----------
   async toggleCam(){
     if(this.camOn){ await this.stopCam(); return; }
