@@ -389,7 +389,13 @@ const Q = {
       for(const k in op.match){ const v=op.match[k]; if(v===null) q=q.is(k,null); else q=q.eq(k,v); }
       const {error}=await q; if(error) throw error;
     }
+    else if(op.t==='delete'){
+      let q=sb.from(op.table).delete();
+      for(const k in op.match){ const v=op.match[k]; if(v===null) q=q.is(k,null); else q=q.eq(k,v); }
+      const {error}=await q; if(error) throw error;
+    }
   },
+  dropInsert(table, matchFn){ this.items=this.items.filter(op=>!(op.t==='insert'&&op.table===table&&matchFn(op.payload))); this.save(); },
   async flush(manual){
     if(this.flushing) return;
     if(!navigator.onLine){ this.badge(); if(manual) toast('Sin conexión','err'); return; }
@@ -417,6 +423,7 @@ const Q = {
 // helpers de escritura que pasan por la cola
 function qInsert(table,payload){ Q.enqueue({t:'insert',table,payload}); }
 function qUpdate(table,match,payload){ Q.enqueue({t:'update',table,match,payload}); }
+function qDelete(table,match){ Q.enqueue({t:'delete',table,match}); }
 
 // caché de lecturas (para consultas offline)
 const Cache={
@@ -546,6 +553,7 @@ const Op = {
     const semActual=isoWeekInfo(new Date()).label;
     (ts||[]).forEach(t=>{ this.stdSku[t.sku]=Number(t.mediana_seg); if(t.semana===semActual) this.provisional.add(t.sku); });
     await this.comprobarTurno();
+    this.loadSerie();
     await this.reconstruir();
     await this.comprobarParadaActiva();
     if(!this.ticking){ this.ticking=true; setInterval(()=>this.tick(),1000); }
@@ -659,6 +667,8 @@ const Op = {
       const pq=Q.items.filter(o=>o.table==='paradas'&&o.t==='insert'&&o.payload.usuario_id===this.user.id);
       if(pq.length && !this.paro){ const p=pq[pq.length-1].payload; this.paro={motivo:p.motivo,inicio:p.inicio}; this.paroInicio=new Date(p.inicio).getTime(); this.mostrarParo(); }
     }catch(e){}
+    // si hay una serie de stock activa, su unidad-marcador NO es un personalizado en curso
+    if(this.serie && this.serie.marker){ this.enCurso.delete(this.serie.marker); }
   },
 
   async comprobarParadaActiva(){
@@ -720,8 +730,15 @@ const Op = {
       pend=(data||[]).map(x=>x.id);
     }catch(e){ pend=[]; }
     if(!pend.length) pend=[u.id]; // offline: al menos la escaneada
-    this.serie={ot:u.ot, sku:u.sku, nombre:(this.prodMap[u.sku]||u._nombre||u.sku), start:Date.now(), pendientes:pend};
+    const start=Date.now();
+    const marker=pend[0];
+    const startIso=new Date(start).toISOString();
+    this.serie={ot:u.ot, sku:u.sku, nombre:(this.prodMap[u.sku]||u._nombre||u.sku),
+                start, pendientes:pend, marker, markerTs:startIso};
     this.serieSel=pend.length;
+    // registra el ARRANQUE (inicio de la 1ª ud) para que el encargado lo vea
+    qInsert('fabricacion_eventos',{unidad_id:marker,ot:u.ot,sku:u.sku,usuario_id:this.user.id,tipo:'inicio',ts:startIso});
+    this.saveSerie();
     if(u.sku) this.avgSku(u.sku);
     toast('▶ Serie STOCK · '+pend.length+' uds pendientes','ok'); beep(true);
     this.render();
@@ -736,7 +753,10 @@ const Op = {
     units.forEach((uid,i)=>{
       const iniTs=new Date(s.start + per*i*1000).toISOString();
       const finTs=new Date(s.start + per*(i+1)*1000).toISOString();
-      qInsert('fabricacion_eventos',{unidad_id:uid,ot:s.ot,sku:s.sku,usuario_id:this.user.id,tipo:'inicio',ts:iniTs});
+      // la 1ª unidad (marker) ya tiene su 'inicio' registrado al arrancar; solo su 'fin'
+      if(!(i===0 && uid===s.marker)){
+        qInsert('fabricacion_eventos',{unidad_id:uid,ot:s.ot,sku:s.sku,usuario_id:this.user.id,tipo:'inicio',ts:iniTs});
+      }
       qInsert('fabricacion_eventos',{unidad_id:uid,ot:s.ot,sku:s.sku,usuario_id:this.user.id,tipo:'fin',ts:finTs});
       qUpdate('unidades',{id:uid},{estado:'stock',fabricada_at:finTs});
       this.hechasHoy++; this.duracionesHoy.push(per);
@@ -746,15 +766,22 @@ const Op = {
     this.avgCache[s.sku]=null;
     const sku=s.sku;
     toast('✓ '+count+' uds terminadas · '+fmtDur(per)+' c/u','ok'); beep(true,true);
-    this.serie=null; this.serieSel=0;
+    this.serie=null; this.serieSel=0; this.clearSerie();
     if(sku && (this.stdSku[sku]===undefined || this.provisional.has(sku))) this.aprenderTiempo(sku);
     this.render();
   },
   cancelarSerie(){
     if(!this.serie) return;
     if(!confirm('¿Descartar la serie sin registrar nada?')) return;
-    this.serie=null; this.serieSel=0; this.render();
+    const s=this.serie;
+    // deshacer el 'inicio' de arranque: quitarlo de la cola si no se envió, y borrarlo si ya está
+    Q.dropInsert('fabricacion_eventos', p=>p.unidad_id===s.marker && p.tipo==='inicio' && p.ts===s.markerTs);
+    qDelete('fabricacion_eventos',{unidad_id:s.marker, tipo:'inicio', ts:s.markerTs});
+    this.serie=null; this.serieSel=0; this.clearSerie(); this.render();
   },
+  saveSerie(){ try{ localStorage.setItem('molyn_serie_'+this.user.id, JSON.stringify(this.serie)); }catch(e){} },
+  clearSerie(){ try{ localStorage.removeItem('molyn_serie_'+this.user.id); }catch(e){} },
+  loadSerie(){ try{ const s=JSON.parse(localStorage.getItem('molyn_serie_'+this.user.id)||'null'); if(s&&s.ot){ this.serie=s; this.serieSel=s.pendientes?s.pendientes.length:1; } }catch(e){} },
   serieMas(){ if(this.serie){ this.serieSel=Math.min(this.serie.pendientes.length, this.serieSel+1); this.render(); } },
   serieMenos(){ if(this.serie){ this.serieSel=Math.max(1, this.serieSel-1); this.render(); } },
   toggleAlgunas(){ if(!this.serie) return; this.__algunas=!this.__algunas; if(this.__algunas){ const n=this.serie.pendientes.length; this.serieSel=Math.max(1,n-1); } this.render(); },
@@ -880,6 +907,7 @@ const Op = {
       }
     });
     if(this.paro){ $('#paroTiempo').textContent=fmtDur((now-this.paroInicio)/1000); }
+    if(this.serie){ const el=document.getElementById('serieCrono'); if(el) el.textContent=fmtDur((now-this.serie.start)/1000); }
     if(this.turno){
       const dur=(now-this.turnoInicio)/1000;
       let paradas=this.paradasSeg + (this.paro? (now-this.paroInicio)/1000 : 0);
@@ -899,6 +927,7 @@ const Op = {
         <span class="stag">STOCK · LOTE</span>
         <div class="snom">${esc(s.nombre)}</div>
         <div class="ssub">${esc(s.ot)} · ${n} uds pendientes</div>
+        <div class="ssub" style="margin-top:2px">Llevas <b id="serieCrono">0:00</b> con este lote</div>
         <div class="sbtns">
           <button class="btodas" onclick="Op.terminarSerie(${n})">✓ Terminar todas (${n})</button>
           <button class="balgunas" onclick="Op.toggleAlgunas()">Terminar algunas</button>
