@@ -158,6 +158,14 @@ main{padding:20px;max-width:900px;margin:0 auto}
 .chk{display:flex;align-items:center;gap:6px;font-size:14px;color:var(--muted)}
 .stat-chip{display:inline-block;font-size:12px;font-weight:700;padding:3px 10px;border-radius:9px;margin:2px 4px 2px 0}
 .op-card{background:var(--surf);border:1px solid var(--border);border-radius:14px;padding:14px;box-shadow:0 4px 12px rgba(30,25,20,.04)}
+.modal-ov{position:fixed;inset:0;background:rgba(20,18,15,.45);display:none;align-items:center;justify-content:center;z-index:200;padding:20px}
+.modal-ov.on{display:flex}
+.modal-bx{background:var(--surf);border-radius:16px;max-width:440px;width:100%;padding:22px;box-shadow:0 20px 50px rgba(0,0,0,.25);position:relative}
+.modal-bx .mclose{position:absolute;top:14px;right:16px;border:none;background:none;font-size:18px;color:var(--muted);cursor:pointer}
+.det-row{display:flex;justify-content:space-between;gap:12px;padding:11px 0;border-bottom:1px solid var(--border)}
+.det-row:last-of-type{border-bottom:none}
+.det-row .k{color:var(--muted)}
+.det-row .v{font-weight:800;text-align:right;text-transform:capitalize}
 .op-card.paro{border-color:var(--red)}
 .op-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px}
 .op-name{font-weight:700;font-size:16px}
@@ -324,6 +332,9 @@ main{padding:20px;max-width:900px;margin:0 auto}
     <section id="secOperarios" class="enc-sec hidden">
       <div class="row-top"><h3 class="sec">Ritmo y estado</h3><button class="btn-ghost sm" onclick="Enc.loadOperarios()">↻</button></div>
       <div id="opsList" class="lista"></div>
+      <div id="opModal" class="modal-ov" onclick="if(event.target===this)Enc.cerrarDetalle()">
+        <div class="modal-bx" id="opModalBx"></div>
+      </div>
     </section>
 
     <!-- INVENTARIO -->
@@ -1121,10 +1132,11 @@ const Enc = {
   // ---------- OPERARIOS ----------
   async loadOperarios(){
     $('#opsList').innerHTML='<div class="vacio">Cargando…</div>';
+    if(this.mad==null){ try{ const {data:cfg}=await sb.from('config').select('maduracion').eq('id',1).single(); if(cfg&&cfg.maduracion!=null) this.mad=cfg.maduracion; }catch(e){} }
     try{
       const hoy=new Date(); hoy.setHours(0,0,0,0); const hIso=hoy.toISOString();
       const {data:ops}=await sb.from('usuarios').select('id,nombre').eq('rol','operario').eq('activo',true).order('nombre');
-      const {data:evs}=await sb.from('fabricacion_eventos').select('unidad_id,sku,usuario_id,tipo,ts').gte('ts',hIso);
+      const {data:evs}=await sb.from('fabricacion_eventos').select('unidad_id,ot,sku,usuario_id,tipo,ts').gte('ts',hIso);
       const {data:pars}=await sb.from('paradas').select('usuario_id,motivo,inicio,fin').gte('inicio',hIso);
       const {data:turs}=await sb.from('turnos').select('usuario_id,inicio,fin').gte('inicio',hIso);
       const now=Date.now();
@@ -1136,7 +1148,7 @@ const Enc = {
           const a=byU[uid].sort((x,y)=>new Date(x.ts)-new Date(y.ts));
           const inis=a.filter(x=>x.tipo==='inicio'), fins=a.filter(x=>x.tipo==='fin');
           fins.forEach((f,i)=>{ hechas++; const ini=inis[i]; if(ini){const d=(new Date(f.ts)-new Date(ini.ts))/1000; if(d>0&&d<86400)durs.push(d);} });
-          if(inis.length>fins.length){ const li=inis[inis.length-1]; enCurso.push({sku:li.sku,start:new Date(li.ts).getTime()}); }
+          if(inis.length>fins.length){ const li=inis[inis.length-1]; enCurso.push({sku:li.sku,ot:li.ot,uid,start:new Date(li.ts).getTime()}); }
         }
         const paroAct=(pars||[]).find(p=>p.usuario_id===o.id && !p.fin);
         const parosHoy=(pars||[]).filter(p=>p.usuario_id===o.id);
@@ -1162,11 +1174,11 @@ const Enc = {
   },
   renderOperarios(){
     if(!this._ops||!this._ops.length){ $('#opsList').innerHTML='<div class="vacio">Sin operarios.</div>'; return; }
-    $('#opsList').innerHTML=this._ops.map(x=>{
+    $('#opsList').innerHTML=this._ops.map((x,xi)=>{
       const st = x.paroAct ? `<span class="badge par">⏸ ${esc(x.paroAct.motivo)}</span>`
                : x.enCurso.length ? `<span class="badge act">▶ Fabricando ${x.enCurso.length}</span>`
                : `<span class="badge off">Inactivo</span>`;
-      const cur = x.enCurso.map(c=>`<span class="stat-chip" style="background:#F5E7DF;color:#B85C38">${esc(this.prodMap[c.sku]||c.sku)} · <span data-crono="${c.start}">0:00</span></span>`).join('');
+      const cur = x.enCurso.map((c,ci)=>`<span class="stat-chip" style="background:#F5E7DF;color:#B85C38;cursor:pointer" onclick="Enc.verUnidad(${xi},${ci})" title="Ver detalle">${esc(this.prodMap[c.sku]||c.sku)} · <span data-crono="${c.start}">0:00</span> ›</span>`).join('');
       const parInfo = x.parosHoy.length? `Paradas hoy: ${x.parosHoy.length}`:'Sin paradas';
       const turnoInfo = x.turnoDur? ` · Turno ${fmtHM(x.turnoDur)}${x.turnoAbierto?' (abierto)':''} · Ocup. ${x.ocup}%`:' · Sin turno';
       return `<div class="op-card ${x.paroAct?'paro':''}">
@@ -1176,6 +1188,26 @@ const Enc = {
       </div>`;
     }).join('');
   },
+  verUnidad(xi,ci){
+    const x=this._ops[xi]; if(!x) return; const c=x.enCurso[ci]; if(!c) return;
+    const nom=this.prodMap[c.sku]||c.sku;
+    const ini=new Date(c.start);
+    const mad=Number(this.mad||0);
+    const dispo=new Date(c.start); dispo.setDate(dispo.getDate()+mad);
+    const fH=d=>d.toLocaleTimeString('es-ES',{hour:'2-digit',minute:'2-digit'});
+    const fD=d=>d.toLocaleDateString('es-ES',{weekday:'long',day:'2-digit',month:'long'});
+    $('#opModalBx').innerHTML=`
+      <button class="mclose" onclick="Enc.cerrarDetalle()">✕</button>
+      <h3 style="margin:0 0 2px">${esc(nom)}</h3>
+      <div class="usub" style="margin-bottom:12px">${esc(x.o.nombre)} · fabricando</div>
+      <div class="det-row"><span class="k">Orden (OT)</span><span class="v">${esc(c.ot||'—')}</span></div>
+      <div class="det-row"><span class="k">Hora de inicio</span><span class="v">${fH(ini)}</span></div>
+      <div class="det-row"><span class="k">Maduración</span><span class="v">${mad} día${mad===1?'':'s'}</span></div>
+      <div class="det-row"><span class="k">Disponible (aprox.)</span><span class="v">${fD(dispo)}</span></div>
+      <div class="usub" style="margin-top:12px;font-size:12px;line-height:1.4">La disponibilidad es una estimación (inicio + maduración). Se confirmará al terminar la fabricación.</div>`;
+    $('#opModal').classList.add('on');
+  },
+  cerrarDetalle(){ $('#opModal').classList.remove('on'); },
   tick(){
     if(this.sec==='operarios'){
       document.querySelectorAll('#opsList [data-crono]').forEach(el=>{
