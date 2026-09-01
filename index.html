@@ -731,15 +731,9 @@ const Op = {
       const {data:od}=await sb.from('ordenes').select('nombre,sku').eq('ot',u.ot).limit(1);
       if(od&&od[0]){ if(!u.sku && od[0].sku) u.sku=od[0].sku; u._nombre=od[0].nombre; }
     }catch(e){}
-    // DIARIO (stock) -> serie con botones ; PERSONALIZADO -> una a una
-    if(this.esDiario(u.sku)){ return this.iniciarSerie(u); }
-    // ---- PERSONALIZADO: una a una ----
-    const ts=new Date().toISOString();
-    qInsert('fabricacion_eventos',{unidad_id:u.id,ot:u.ot,sku:u.sku,usuario_id:this.user.id,tipo:'inicio',ts});
-    this.enCurso.set(u.id,{unidad_id:u.id,ot:u.ot,sku:u.sku,start:new Date(ts).getTime()});
-    if(u.sku) this.avgSku(u.sku);
-    toast('▶ Iniciada '+u.id,'ok'); beep(true);
-    this.render();
+    // Ambos (diario y personalizado) abren SERIE con selector de cantidad.
+    // Así el operario puede terminar N de M unidades de golpe (ej. 4 de 10).
+    return this.iniciarSerie(u);
   },
 
   // ---- STOCK: arranca serie al escanear la primera ----
@@ -753,14 +747,15 @@ const Op = {
     const start=Date.now();
     const marker=pend[0];
     const startIso=new Date(start).toISOString();
+    const esPers=!this.esDiario(u.sku);
     this.serie={ot:u.ot, sku:u.sku, nombre:(this.prodMap[u.sku]||u._nombre||u.sku),
-                start, pendientes:pend, marker, markerTs:startIso};
+                start, pendientes:pend, marker, markerTs:startIso, personalizado:esPers};
     this.serieSel=pend.length;
     // registra el ARRANQUE (inicio de la 1ª ud) para que el encargado lo vea
     qInsert('fabricacion_eventos',{unidad_id:marker,ot:u.ot,sku:u.sku,usuario_id:this.user.id,tipo:'inicio',ts:startIso});
     this.saveSerie();
     if(u.sku) this.avgSku(u.sku);
-    toast('▶ Serie STOCK · '+pend.length+' uds pendientes','ok'); beep(true);
+    toast('▶ Serie '+(esPers?'PERSONALIZADO':'STOCK')+' · '+pend.length+' uds pendientes','ok'); beep(true);
     this.render();
   },
   // terminar N unidades de la serie (reparte el tiempo total a partes iguales)
@@ -943,8 +938,9 @@ const Op = {
     const sb2=$('#serieBox');
     if(this.serie){
       const s=this.serie, n=s.pendientes.length, sel=Math.min(this.serieSel||n, n);
-      sb2.innerHTML=`<div class="serie">
-        <span class="stag">STOCK · LOTE</span>
+      const esPers=s.personalizado;
+      sb2.innerHTML=`<div class="serie"${esPers?' style="border-color:#8A4B9C"':''}>
+        <span class="stag"${esPers?' style="background:#EEE4F2;color:#7A3E8C"':''}>${esPers?'PERSONALIZADO · LOTE':'STOCK · LOTE'}</span>
         <div class="snom">${esc(s.nombre)}</div>
         <div class="ssub">${esc(s.ot)} · ${n} uds pendientes</div>
         <div class="ssub" style="margin-top:2px">Llevas <b id="serieCrono">0:00</b> con este lote</div>
@@ -957,7 +953,7 @@ const Op = {
             <div class="num">${sel}</div>
             <button onclick="Op.serieMas()">+</button>
           </div>
-          <button class="sconfirm" onclick="Op.__algunas=false;Op.terminarSerie(${sel})">Terminar ${sel} uds</button>`:''}
+          <button class="sconfirm" onclick="Op.__algunas=false;Op.terminarSerie(${sel})">Terminar ${sel} de ${n}</button>`:''}
         <div style="text-align:center;margin-top:10px"><a href="#" onclick="event.preventDefault();Op.cancelarSerie()" style="color:var(--muted);font-size:13px">Descartar serie</a></div>
       </div>`;
     } else { sb2.innerHTML=''; this.__algunas=false; }
