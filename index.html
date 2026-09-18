@@ -68,6 +68,7 @@ header .who span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-w
 .syncbar.ok{background:var(--green-soft);color:#1F5A31}
 .syncbar.off{background:var(--amber-soft);color:var(--amber)}
 .syncbar.pend{background:var(--terra-soft);color:var(--terra-d)}
+.syncbar.err{background:var(--red-soft);color:var(--red)}
 .syncbar button{margin-left:auto;background:var(--ink);color:#fff;border-radius:var(--pill);padding:10px 16px;font-size:14px;font-weight:700}
 
 /* ---------- login: tarjetas grandes, nombre enorme ---------- */
@@ -571,10 +572,15 @@ const MOTIVOS = [
 //  OFFLINE-FIRST: cola local + caché + estado de red
 // ============================================================
 const Q = {
-  key:'molyn_queue', items:[], flushing:false,
-  load(){ try{ this.items=JSON.parse(localStorage.getItem(this.key)||'[]'); }catch(e){ this.items=[]; } this.badge(); },
+  key:'molyn_queue', failKey:'molyn_queue_failed', items:[], failed:[], flushing:false,
+  load(){
+    try{ this.items=JSON.parse(localStorage.getItem(this.key)||'[]'); }catch(e){ this.items=[]; }
+    try{ this.failed=JSON.parse(localStorage.getItem(this.failKey)||'[]'); }catch(e){ this.failed=[]; }
+    this.badge();
+  },
   save(){ try{ localStorage.setItem(this.key, JSON.stringify(this.items)); }catch(e){} this.badge(); },
-  enqueue(op){ op._id=Date.now()+'_'+Math.random().toString(36).slice(2,7); this.items.push(op); this.save(); this.flush(); },
+  saveFailed(){ try{ localStorage.setItem(this.failKey, JSON.stringify(this.failed)); }catch(e){} this.badge(); },
+  enqueue(op){ op._id=Date.now()+'_'+Math.random().toString(36).slice(2,7); op._attempts=0; this.items.push(op); this.save(); this.flush(); },
   async exec(op){
     if(op.t==='insert'){ const {error}=await sb.from(op.table).insert(op.payload); if(error) throw error; }
     else if(op.t==='update'){
@@ -587,27 +593,45 @@ const Q = {
       for(const k in op.match){ const v=op.match[k]; if(v===null) q=q.is(k,null); else q=q.eq(k,v); }
       const {error}=await q; if(error) throw error;
     }
+    else if(op.t==='consumir_reserva'){
+      const {data}=await sb.from('reservas').select('id,cantidad').eq('sku',op.sku).eq('estado','pendiente').order('created_at').order('id').limit(1);
+      const r=data&&data[0]; if(!r) return;
+      if(r.cantidad>1){ const {error}=await sb.from('reservas').update({cantidad:r.cantidad-1}).eq('id',r.id); if(error) throw error; }
+      else { const {error}=await sb.from('reservas').update({estado:'consumida'}).eq('id',r.id); if(error) throw error; }
+    }
   },
   dropInsert(table, matchFn){ this.items=this.items.filter(op=>!(op.t==='insert'&&op.table===table&&matchFn(op.payload))); this.save(); },
   async flush(manual){
     if(this.flushing) return;
     if(!navigator.onLine){ this.badge(); if(manual) toast('Sin conexión','err'); return; }
     this.flushing=true; this.badge();
-    let ok=0;
+    let ok=0, fail=0;
     while(this.items.length){
       const op=this.items[0];
       try{ await this.exec(op); this.items.shift(); this.save(); ok++; }
       catch(e){
-        if(e && (e.message||'').match(/Failed to fetch|NetworkError|network|fetch/i)){ break; }
-        else { this.items.shift(); this.save(); }
+        const msg=(e&&e.message)||String(e);
+        if(/Failed to fetch|NetworkError|network|fetch/i.test(msg)){ break; }
+        op._attempts=(op._attempts||0)+1;
+        if(op._attempts>=3){
+          this.items.shift();
+          this.failed.push(Object.assign({},op,{_error:msg,_failedAt:new Date().toISOString()}));
+          this.saveFailed();
+          fail++;
+          console.error('Molyn: operación descartada tras 3 intentos', op, msg);
+        }else{
+          this.items.shift(); this.items.push(op); this.save();
+        }
       }
     }
     this.flushing=false; this.badge();
     if(manual && ok) toast(ok+' sincronizados','ok');
+    if(fail) toast(fail+' operación'+(fail>1?'es':'')+' no se pudo'+(fail>1?'ron':'')+' guardar. Avisa a oficina.','err');
   },
   badge(){
-    const n=this.items.length, bar=$('#syncBar'), txt=$('#syncTxt'), btn=$('#syncBtn');
+    const n=this.items.length, nf=this.failed.length, bar=$('#syncBar'), txt=$('#syncTxt'), btn=$('#syncBtn');
     if(!bar) return;
+    if(nf){ bar.className='syncbar err'; txt.textContent=nf+' error'+(nf>1?'es':'')+' sin guardar — avisa a oficina'+(n?' · '+n+' pendientes':''); btn.classList.toggle('hidden', n===0); return; }
     if(!navigator.onLine){ bar.className='syncbar off'; txt.textContent='Sin conexión'+(n?' · '+n+' sin enviar':''); btn.classList.toggle('hidden', n===0); }
     else if(n){ bar.className='syncbar pend'; txt.textContent=n+' sin enviar'; btn.classList.remove('hidden'); }
     else { bar.className='syncbar ok'; txt.textContent='Conectado'; btn.classList.add('hidden'); }
@@ -616,6 +640,7 @@ const Q = {
 function qInsert(table,payload){ Q.enqueue({t:'insert',table,payload}); }
 function qUpdate(table,match,payload){ Q.enqueue({t:'update',table,match,payload}); }
 function qDelete(table,match){ Q.enqueue({t:'delete',table,match}); }
+function qConsumirReserva(sku){ if(sku) Q.enqueue({t:'consumir_reserva',sku}); }
 
 const Cache={
   set(k,v){ try{ localStorage.setItem('molyn_c_'+k, JSON.stringify(v)); }catch(e){} },
@@ -885,11 +910,12 @@ const Op = {
     return this.iniciar(code);
   },
   async iniciar(code){
-    let u=null;
+    let u=null, notFound=false;
     try{
       const {data}=await sb.from('unidades').select('id,ot,sku,estado').eq('id',code).limit(1);
-      u=data&&data[0];
+      if(data && data.length) u=data[0]; else notFound=true;
     }catch(e){ u=null; }
+    if(notFound){ toast('Código no reconocido: '+code,'err'); beep(false); return; }
     if(u){
       if(u.estado!=='pendiente'){
         toast(u.estado==='stock'?'Esa unidad ya está fabricada':'Unidad '+u.estado+', no válida','err'); beep(false); return;
@@ -1222,9 +1248,10 @@ const Enc = {
   async addCart(code){
     code=String(code).trim().toUpperCase();
     if(this.cart.has(code)){ toast('Ya está en la lista','err'); return; }
-    let u=null;
-    try{ const {data}=await sb.from('unidades').select('id,ot,sku,estado').eq('id',code).limit(1); u=data&&data[0]; }
+    let u=null, notFound=false;
+    try{ const {data}=await sb.from('unidades').select('id,ot,sku,estado').eq('id',code).limit(1); if(data&&data.length) u=data[0]; else notFound=true; }
     catch(e){ u=null; }
+    if(notFound){ toast('Código no reconocido: '+code,'err'); beep(false); return; }
     if(u){
       if(u.estado!=='stock'){ toast(u.estado==='pendiente'?'Aún no fabricada':'No consumible ('+u.estado+')','err'); beep(false); return; }
       this.cart.set(code,{unidad_id:code,ot:u.ot,sku:u.sku,nombre:this.prodMap[u.sku]||u.sku});
@@ -1256,15 +1283,7 @@ const Enc = {
     toast(arr.length+' en cola de consumo','ok'); beep(true,true);
     this.cart.clear(); this.renderCart();
   },
-  async consumirReserva(sku){
-    if(!navigator.onLine) return;
-    try{
-      const {data}=await sb.from('reservas').select('id,cantidad').eq('sku',sku).eq('estado','pendiente').order('created_at').order('id').limit(1);
-      const r=data&&data[0]; if(!r) return;
-      if(r.cantidad>1) await sb.from('reservas').update({cantidad:r.cantidad-1}).eq('id',r.id);
-      else await sb.from('reservas').update({estado:'consumida'}).eq('id',r.id);
-    }catch(e){}
-  },
+  consumirReserva(sku){ qConsumirReserva(sku); },
 
   // ---------- STOCK ----------
   async loadStock(){
