@@ -757,6 +757,7 @@ const Op = {
   paro:null, paroInicio:null, prodMap:{}, avgCache:{}, cam:null, camOn:false,
   lastScan:{code:null, t:0}, ticking:false,
   turno:null, turnoInicio:null, paradasSeg:0, cfg:{descanso_min:60}, stdSku:{}, provisional:new Set(),
+  lastActivityTs:null,
 
   async init(u){
     this.user=u;
@@ -779,9 +780,12 @@ const Op = {
     this.loadSerie();
     await this.reconstruir();
     await this.comprobarParadaActiva();
+    this.lastActivityTs=Date.now();
     if(!this.ticking){ this.ticking=true; setInterval(()=>this.tick(),1000); }
     this.renderTurno(); this.render(); Q.badge();
   },
+
+  markActivity(){ this.lastActivityTs=Date.now(); },
 
   // iconos fijos de la interfaz
   pintarIconos(){
@@ -831,6 +835,7 @@ const Op = {
     const inicio=new Date().toISOString();
     qInsert('turnos',{usuario_id:this.user.id, inicio});
     this.turno={inicio}; this.turnoInicio=new Date(inicio).getTime(); this.paradasSeg=0;
+    this.markActivity();
     toast('Turno iniciado','ok'); beep(true);
     this.renderTurno();
   },
@@ -846,6 +851,14 @@ const Op = {
     alert(`Turno finalizado.\n\nTurno: ${fmtHM(dur)}\nParadas: ${fmtHM(this.paradasSeg)}\nProductivo: ${fmtHM(prod)}\nOcupación: ${ocup}%\nHechas: ${this.hechasHoy}`);
     this.turno=null; this.turnoInicio=null; this.paradasSeg=0;
     this.renderTurno();
+  },
+  async autoParada(){
+    if(this.paro || !this.turno) return;
+    const inicio=new Date().toISOString();
+    qInsert('paradas',{usuario_id:this.user.id, motivo:'Inactividad', inicio});
+    this.paro={motivo:'Inactividad', inicio}; this.paroInicio=new Date(inicio).getTime();
+    this.mostrarParo();
+    toast('Parada automática por inactividad','err');
   },
   renderTurno(){
     const on=!!this.turno;
@@ -911,8 +924,12 @@ const Op = {
   async scan(code){
     code=String(code).trim().toUpperCase();
     if(!this.turno){ toast('Comienza el turno primero','err'); beep(false); return; }
-    if(this.paro){ toast('Hay una parada activa. Reanuda para seguir.','err'); beep(false); return; }
+    if(this.paro){
+      if(this.paro.motivo==='Inactividad'){ await this.reanudar(true); }
+      else { toast('Hay una parada activa. Reanuda para seguir.','err'); beep(false); return; }
+    }
     if(this.serie){ toast('Tienes un lote en curso. Ciérralo con los botones.','err'); beep(false); return; }
+    this.markActivity();
     if(this.enCurso.has(code)){ return this.finalizar(code); }
     return this.iniciar(code);
   },
@@ -979,6 +996,7 @@ const Op = {
     const sku=s.sku;
     toast(count+' uds terminadas · '+fmtDur(per)+' c/u','ok'); beep(true,true);
     this.serie=null; this.serieSel=0; this.clearSerie();
+    this.markActivity();
     if(sku && (this.stdSku[sku]===undefined || this.provisional.has(sku))) this.aprenderTiempo(sku);
     this.render();
   },
@@ -1007,6 +1025,7 @@ const Op = {
     this.ultimas.unshift({unidad_id:code,sku:it.sku,seg}); this.ultimas=this.ultimas.slice(0,10);
     this.avgCache[it.sku]=null;
     toast('Terminada '+code+' ('+fmtDur(seg)+')','ok'); beep(true,true);
+    this.markActivity();
     if(it.sku && (this.stdSku[it.sku]===undefined || this.provisional.has(it.sku))) this.aprenderTiempo(it.sku);
     this.render();
   },
@@ -1061,13 +1080,14 @@ const Op = {
     qInsert('paradas',{usuario_id:this.user.id, motivo, inicio});
     this.paro={motivo, inicio}; this.paroInicio=new Date(inicio).getTime(); this.mostrarParo();
   },
-  async reanudar(){
+  async reanudar(silent){
     if(!this.paro) return;
     qUpdate('paradas', {usuario_id:this.user.id, fin:null}, {fin:new Date().toISOString()});
     if(this.turno && this.paroInicio){ this.paradasSeg += (Date.now()-this.paroInicio)/1000; }
     this.paro=null; this.paroInicio=null;
+    this.markActivity();
     $('#paroBanner').classList.add('hidden');
-    toast('Trabajo reanudado','ok');
+    if(!silent) toast('Trabajo reanudado','ok');
   },
   mostrarParo(){
     $('#paroMotivo').textContent=this.paro.motivo;
@@ -1125,6 +1145,10 @@ const Op = {
       $('#turnoCrono').textContent=fmtHM(dur);
       $('#turnoProd').textContent='Productivo '+fmtHM(prod);
       $('#turnoOcup').textContent='Ocupación '+ocup+'%';
+    }
+    if(this.turno && !this.paro && this.enCurso.size===0 && !this.serie){
+      const idleMs = now - (this.lastActivityTs||now);
+      if(idleMs >= 3*60*1000) this.autoParada();
     }
   },
   render(){
