@@ -572,8 +572,13 @@ const ICO = {
   box:   _svg('<path d="M21 8l-9-5-9 5v8l9 5 9-5V8z"/><path d="M3 8l9 5 9-5"/>')
 };
 const MOTIVOS = [
-  ['Desayuno','coffee'],['Comida','food'],['Avería','wrench'],['Falta material','box'],['Otro','plus']
+  ['Desayuno','coffee'],['Comida','food'],['Avería','wrench'],['Falta material','box'],['Retrabajo','refresh'],['Otro','plus']
 ];
+function solaparSeg(iniMs,finMs,intervalos){
+  let t=0;
+  for(const [a,b] of intervalos){ const lo=Math.max(iniMs,a), hi=Math.min(finMs,b); if(hi>lo) t+=(hi-lo)/1000; }
+  return t;
+}
 
 // ============================================================
 //  OFFLINE-FIRST: cola local + caché + estado de red
@@ -977,7 +982,9 @@ const Op = {
   async terminarSerie(count){
     const s=this.serie; if(!s) return;
     count=Math.max(1, Math.min(count, s.pendientes.length));
-    const total=Math.max(1,(Date.now()-s.start)/1000);
+    const finMs=Date.now();
+    const retra=await this.retrabajosDe(new Date(s.start).toISOString(), new Date(finMs).toISOString());
+    const total=Math.max(1,(finMs-s.start)/1000 - solaparSeg(s.start,finMs,retra));
     const per=total/count;
     const units=s.pendientes.slice(0,count);
     units.forEach((uid,i)=>{
@@ -1017,7 +1024,9 @@ const Op = {
   async finalizar(code){
     const it=this.enCurso.get(code);
     const ts=new Date().toISOString();
-    const seg=(new Date(ts).getTime()-it.start)/1000;
+    const finMs=new Date(ts).getTime();
+    const retra=await this.retrabajosDe(new Date(it.start).toISOString(), ts);
+    const seg=Math.max(0,(finMs-it.start)/1000 - solaparSeg(it.start,finMs,retra));
     qInsert('fabricacion_eventos',{unidad_id:code,ot:it.ot,sku:it.sku,usuario_id:this.user.id,tipo:'fin',ts});
     qUpdate('unidades',{id:code},{estado:'stock',fabricada_at:ts});
     this.enCurso.delete(code);
@@ -1069,6 +1078,14 @@ const Op = {
     }catch(e){}
     this.render();
     return this.avgCache[sku];
+  },
+
+  // ---------- retrabajo (paradas con motivo Retrabajo dentro de una pieza) ----------
+  async retrabajosDe(desdeIso, hastaIso){
+    try{
+      const {data}=await sb.from('paradas').select('inicio,fin').eq('usuario_id',this.user.id).eq('motivo','Retrabajo').gte('inicio',desdeIso).lte('inicio',hastaIso);
+      return (data||[]).filter(p=>p.fin).map(p=>[new Date(p.inicio).getTime(), new Date(p.fin).getTime()]);
+    }catch(e){ return []; }
   },
 
   // ---------- paradas ----------
