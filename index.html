@@ -456,7 +456,7 @@ input,.uid,.det-row .v{-webkit-user-select:text;user-select:text}
     <div class="subnav" id="encNav">
       <button class="on" data-sec="consumo" onclick="Enc.go('consumo')">Consumo</button>
       <button data-sec="stock" onclick="Enc.go('stock')">Stock</button>
-      <button data-sec="operarios" onclick="Enc.go('operarios')">Operarios</button>
+      <button data-sec="operarios" onclick="Enc.go('operarios')">Puestos</button>
       <button data-sec="inventario" onclick="Enc.go('inventario')">Inventario</button>
       <button data-sec="partes" onclick="Enc.go('partes')">Partes</button>
       <button data-sec="lotes" onclick="Enc.go('lotes')">Lotes</button>
@@ -675,29 +675,36 @@ const AV_COLORS = {operario:['#F7E8E0','#B0552F'], encargado:['#E1EAEF','#3C6375
 const ROL_LBL = {operario:'Operario', encargado:'Encargado'};
 
 const Login = {
+  // "users" mezcla puestos de trabajo (login compartido, sin persona concreta)
+  // y encargados (login personal, como antes). Los operarios ya no inician
+  // sesión individual: se fichan como parte de un puesto.
   users: [], sel: null, pin: '',
   async init(){
     const saved = sessionStorage.getItem('molyn_user');
     if(saved){ this.enter(JSON.parse(saved)); return; }
     try{
-      const {data, error} = await sb.from('usuarios').select('id,nombre,rol,pin,puesto_id').eq('activo',true).order('rol').order('nombre');
-      if(error) throw error;
-      this.users = data || [];
-      this.puestos={};
-      try{ const {data:ps}=await sb.from('puestos_trabajo').select('id,nombre'); (ps||[]).forEach(p=>this.puestos[p.id]=p.nombre); }catch(e){}
+      const [{data:puestos,error:e1},{data:encs,error:e2}] = await Promise.all([
+        sb.from('puestos_trabajo').select('id,nombre,pin').eq('activo',true).order('nombre'),
+        sb.from('usuarios').select('id,nombre,pin').eq('rol','encargado').eq('activo',true).order('nombre')
+      ]);
+      if(e1) throw e1; if(e2) throw e2;
+      this.users = [
+        ...(puestos||[]).map(p=>({id:p.id, nombre:p.nombre, pin:p.pin, tipo:'puesto'})),
+        ...(encs||[]).map(u=>({id:u.id, nombre:u.nombre, pin:u.pin, tipo:'encargado'}))
+      ];
       this.renderUsers();
     }catch(e){ toast('No se pudo conectar: '+e.message,'err'); }
   },
   renderUsers(){
     const c = $('#usersList');
     c.innerHTML = this.users.map((u,i)=>{
-      const [bg,fg] = AV_COLORS[u.rol]||AV_COLORS.operario;
+      const esPuesto = u.tipo==='puesto';
+      const [bg,fg] = esPuesto ? AV_COLORS.operario : (AV_COLORS.encargado||AV_COLORS.operario);
       const ini = (u.nombre||'?').trim().charAt(0).toUpperCase();
-      const puesto=(this.puestos||{})[u.puesto_id];
       return `<div class="ucard" onclick="Login.pick(${i})">
         <div class="av" style="background:${bg};color:${fg}">${ini}</div>
         <div class="nm">${esc(u.nombre)}</div>
-        <div class="rl">${esc(ROL_LBL[u.rol]||u.rol)}${puesto?' · '+esc(puesto):''}</div></div>`;
+        <div class="rl">${esPuesto?'Puesto':'Encargado'}</div></div>`;
     }).join('');
   },
   pick(i){
@@ -728,7 +735,7 @@ const Login = {
   },
   check(){
     if(this.pin === String(this.sel.pin)){
-      const u = {id:this.sel.id, nombre:this.sel.nombre, rol:this.sel.rol};
+      const u = {id:this.sel.id, nombre:this.sel.nombre, tipo:this.sel.tipo};
       sessionStorage.setItem('molyn_user', JSON.stringify(u));
       this.enter(u);
     }else{
@@ -745,10 +752,11 @@ const Login = {
     $('#login').classList.add('hidden');
     $('#app').classList.remove('hidden');
     $('#whoName').innerHTML = `<b>${esc((u.nombre||'').split(' ')[0])}</b>`;
-    $('#viewOperario').classList.toggle('hidden', u.rol!=='operario');
-    $('#viewEncargado').classList.toggle('hidden', u.rol!=='encargado');
-    if(u.rol==='operario') Op.init(u);
-    else if(u.rol==='encargado') Enc.init(u);
+    const esPuesto = u.tipo==='puesto';
+    $('#viewOperario').classList.toggle('hidden', !esPuesto);
+    $('#viewEncargado').classList.toggle('hidden', esPuesto);
+    if(esPuesto) Op.init(u);
+    else Enc.init(u);
   },
   logout(){
     sessionStorage.removeItem('molyn_user');
@@ -832,17 +840,17 @@ const Op = {
   // ---------- TURNO ----------
   async comprobarTurno(){
     try{
-      const {data}=await sb.from('turnos').select('id,inicio').eq('usuario_id',this.user.id).is('fin',null).order('inicio',{ascending:false}).limit(1);
+      const {data}=await sb.from('turnos').select('id,inicio').eq('puesto_id',this.user.id).is('fin',null).order('inicio',{ascending:false}).limit(1);
       if(data&&data.length){
         this.turno=data[0]; this.turnoInicio=new Date(data[0].inicio).getTime();
-        const {data:pars}=await sb.from('paradas').select('inicio,fin').eq('usuario_id',this.user.id).gte('inicio',data[0].inicio);
+        const {data:pars}=await sb.from('paradas').select('inicio,fin').eq('puesto_id',this.user.id).gte('inicio',data[0].inicio);
         this.paradasSeg=(pars||[]).filter(p=>p.fin).reduce((a,p)=>a+(new Date(p.fin)-new Date(p.inicio))/1000,0);
       }
     }catch(e){}
   },
   async comenzarTurno(){
     const inicio=new Date().toISOString();
-    qInsert('turnos',{usuario_id:this.user.id, inicio});
+    qInsert('turnos',{puesto_id:this.user.id, inicio});
     this.turno={inicio}; this.turnoInicio=new Date(inicio).getTime(); this.paradasSeg=0;
     this.markActivity();
     toast('Turno iniciado','ok'); beep(true);
@@ -853,7 +861,7 @@ const Op = {
     if(this.paro){ toast('Reanuda la parada antes de finalizar','err'); return; }
     if(!confirm('¿Finalizar tu turno?')) return;
     const fin=Date.now();
-    qUpdate('turnos', {usuario_id:this.user.id, fin:null}, {fin:new Date().toISOString()});
+    qUpdate('turnos', {puesto_id:this.user.id, fin:null}, {fin:new Date().toISOString()});
     const dur=(fin-this.turnoInicio)/1000;
     const prod=Math.max(0,dur-this.paradasSeg);
     const ocup=dur>0?Math.round(prod/dur*100):0;
@@ -864,7 +872,7 @@ const Op = {
   async autoParada(){
     if(this.paro || !this.turno) return;
     const inicio=new Date().toISOString();
-    qInsert('paradas',{usuario_id:this.user.id, motivo:'Inactividad', inicio});
+    qInsert('paradas',{puesto_id:this.user.id, motivo:'Inactividad', inicio});
     this.paro={motivo:'Inactividad', inicio}; this.paroInicio=new Date(inicio).getTime();
     this.mostrarParo();
     toast('Parada automática por inactividad','err');
@@ -874,7 +882,7 @@ const Op = {
   async autoPreparacion(){
     if(this.paro || !this.turno || this.enCurso.size>0 || this.serie) return;
     const inicio=new Date().toISOString();
-    qInsert('paradas',{usuario_id:this.user.id, motivo:'Preparación', inicio});
+    qInsert('paradas',{puesto_id:this.user.id, motivo:'Preparación', inicio});
     this.paro={motivo:'Preparación', inicio}; this.paroInicio=new Date(inicio).getTime();
     this.mostrarParo();
   },
@@ -889,7 +897,7 @@ const Op = {
     this.enCurso.clear(); this.hechasHoy=0; this.duracionesHoy=[]; this.ultimas=[]; this.serie=null; this.__algunas=false;
     try{
       const {data:evs}=await sb.from('fabricacion_eventos')
-        .select('unidad_id,ot,sku,tipo,ts').eq('usuario_id',this.user.id).order('ts');
+        .select('unidad_id,ot,sku,tipo,ts').eq('puesto_id',this.user.id).order('ts');
       const byU={};
       (evs||[]).forEach(e=>{(byU[e.unidad_id]=byU[e.unidad_id]||[]).push(e);});
       const hoy=new Date(); hoy.setHours(0,0,0,0);
@@ -912,15 +920,15 @@ const Op = {
       this.ultimas=this.ultimas.slice(0,10);
     }catch(e){ }
     try{
-      const qev=Q.items.filter(o=>o.t==='insert'&&o.table==='fabricacion_eventos'&&o.payload.usuario_id===this.user.id);
+      const qev=Q.items.filter(o=>o.t==='insert'&&o.table==='fabricacion_eventos'&&o.payload.puesto_id===this.user.id);
       const inis=qev.filter(o=>o.payload.tipo==='inicio');
       const fins=new Set(qev.filter(o=>o.payload.tipo==='fin').map(o=>o.payload.unidad_id));
       inis.forEach(o=>{ const p=o.payload; if(!fins.has(p.unidad_id) && !this.enCurso.has(p.unidad_id)){
         this.enCurso.set(p.unidad_id,{unidad_id:p.unidad_id,ot:p.ot,sku:p.sku,start:new Date(p.ts).getTime()});
       }});
-      const tq=Q.items.filter(o=>o.table==='turnos'&&o.t==='insert'&&o.payload.usuario_id===this.user.id);
+      const tq=Q.items.filter(o=>o.table==='turnos'&&o.t==='insert'&&o.payload.puesto_id===this.user.id);
       if(tq.length && !this.turno){ const p=tq[tq.length-1].payload; this.turno={inicio:p.inicio}; this.turnoInicio=new Date(p.inicio).getTime(); }
-      const pq=Q.items.filter(o=>o.table==='paradas'&&o.t==='insert'&&o.payload.usuario_id===this.user.id);
+      const pq=Q.items.filter(o=>o.table==='paradas'&&o.t==='insert'&&o.payload.puesto_id===this.user.id);
       if(pq.length && !this.paro){ const p=pq[pq.length-1].payload; this.paro={motivo:p.motivo,inicio:p.inicio}; this.paroInicio=new Date(p.inicio).getTime(); this.mostrarParo(); }
     }catch(e){}
     if(this.serie && this.serie.marker){ this.enCurso.delete(this.serie.marker); }
@@ -929,7 +937,7 @@ const Op = {
   async comprobarParadaActiva(){
     try{
       const {data}=await sb.from('paradas').select('id,motivo,inicio')
-        .eq('usuario_id',this.user.id).is('fin',null).order('inicio',{ascending:false}).limit(1);
+        .eq('puesto_id',this.user.id).is('fin',null).order('inicio',{ascending:false}).limit(1);
       if(data&&data.length){ this.paro=data[0]; this.paroInicio=new Date(data[0].inicio).getTime(); this.mostrarParo(); }
     }catch(e){}
   },
@@ -986,7 +994,7 @@ const Op = {
     this.serie={ot:u.ot, sku:u.sku, nombre:(this.prodMap[u.sku]||u._nombre||u.sku),
                 start, pendientes:pend, marker, markerTs:startIso, personalizado:esPers};
     this.serieSel=pend.length;
-    qInsert('fabricacion_eventos',{unidad_id:marker,ot:u.ot,sku:u.sku,usuario_id:this.user.id,tipo:'inicio',ts:startIso});
+    qInsert('fabricacion_eventos',{unidad_id:marker,ot:u.ot,sku:u.sku,puesto_id:this.user.id,tipo:'inicio',ts:startIso});
     this.saveSerie();
     if(u.sku) this.avgSku(u.sku);
     toast('Lote abierto · '+pend.length+' uds pendientes','ok'); beep(true);
@@ -1004,9 +1012,9 @@ const Op = {
       const iniTs=new Date(s.start + per*i*1000).toISOString();
       const finTs=new Date(s.start + per*(i+1)*1000).toISOString();
       if(!(i===0 && uid===s.marker)){
-        qInsert('fabricacion_eventos',{unidad_id:uid,ot:s.ot,sku:s.sku,usuario_id:this.user.id,tipo:'inicio',ts:iniTs});
+        qInsert('fabricacion_eventos',{unidad_id:uid,ot:s.ot,sku:s.sku,puesto_id:this.user.id,tipo:'inicio',ts:iniTs});
       }
-      qInsert('fabricacion_eventos',{unidad_id:uid,ot:s.ot,sku:s.sku,usuario_id:this.user.id,tipo:'fin',ts:finTs});
+      qInsert('fabricacion_eventos',{unidad_id:uid,ot:s.ot,sku:s.sku,puesto_id:this.user.id,tipo:'fin',ts:finTs});
       qUpdate('unidades',{id:uid},{estado:'stock',fabricada_at:finTs});
       this.hechasHoy++; this.duracionesHoy.push(per);
       this.ultimas.unshift({unidad_id:uid,sku:s.sku,seg:per});
@@ -1041,7 +1049,7 @@ const Op = {
     const finMs=new Date(ts).getTime();
     const retra=await this.retrabajosDe(new Date(it.start).toISOString(), ts);
     const seg=Math.max(0,(finMs-it.start)/1000 - solaparSeg(it.start,finMs,retra));
-    qInsert('fabricacion_eventos',{unidad_id:code,ot:it.ot,sku:it.sku,usuario_id:this.user.id,tipo:'fin',ts});
+    qInsert('fabricacion_eventos',{unidad_id:code,ot:it.ot,sku:it.sku,puesto_id:this.user.id,tipo:'fin',ts});
     qUpdate('unidades',{id:code},{estado:'stock',fabricada_at:ts});
     this.enCurso.delete(code);
     this.hechasHoy++; this.duracionesHoy.push(seg);
@@ -1098,7 +1106,7 @@ const Op = {
   // ---------- retrabajo (paradas con motivo Retrabajo dentro de una pieza) ----------
   async retrabajosDe(desdeIso, hastaIso){
     try{
-      const {data}=await sb.from('paradas').select('inicio,fin').eq('usuario_id',this.user.id).eq('motivo','Retrabajo').gte('inicio',desdeIso).lte('inicio',hastaIso);
+      const {data}=await sb.from('paradas').select('inicio,fin').eq('puesto_id',this.user.id).eq('motivo','Retrabajo').gte('inicio',desdeIso).lte('inicio',hastaIso);
       return (data||[]).filter(p=>p.fin).map(p=>[new Date(p.inicio).getTime(), new Date(p.fin).getTime()]);
     }catch(e){ return []; }
   },
@@ -1109,12 +1117,12 @@ const Op = {
   async iniciarParada(motivo){
     this.cerrarModal();
     const inicio=new Date().toISOString();
-    qInsert('paradas',{usuario_id:this.user.id, motivo, inicio});
+    qInsert('paradas',{puesto_id:this.user.id, motivo, inicio});
     this.paro={motivo, inicio}; this.paroInicio=new Date(inicio).getTime(); this.mostrarParo();
   },
   async reanudar(silent){
     if(!this.paro) return;
-    qUpdate('paradas', {usuario_id:this.user.id, fin:null}, {fin:new Date().toISOString()});
+    qUpdate('paradas', {puesto_id:this.user.id, fin:null}, {fin:new Date().toISOString()});
     if(this.turno && this.paroInicio){ this.paradasSeg += (Date.now()-this.paroInicio)/1000; }
     this.paro=null; this.paroInicio=null;
     this.markActivity();
@@ -1378,19 +1386,19 @@ const Enc = {
     }).join('')||'<div class="vacio">Sin stock.</div>';
   },
 
-  // ---------- OPERARIOS ----------
+  // ---------- PUESTOS (ritmo y estado en vivo) ----------
   async loadOperarios(){
-    $('#opsList').innerHTML='<div class="cargando">Cargando operarios…</div>';
+    $('#opsList').innerHTML='<div class="cargando">Cargando puestos…</div>';
     if(this.mad==null){ try{ const {data:cfg}=await sb.from('config').select('maduracion').eq('id',1).single(); if(cfg&&cfg.maduracion!=null) this.mad=cfg.maduracion; }catch(e){} }
     try{
       const hoy=new Date(); hoy.setHours(0,0,0,0); const hIso=hoy.toISOString();
-      const {data:ops}=await sb.from('usuarios').select('id,nombre').eq('rol','operario').eq('activo',true).order('nombre');
-      const {data:evs}=await sb.from('fabricacion_eventos').select('unidad_id,ot,sku,usuario_id,tipo,ts').gte('ts',hIso);
-      const {data:pars}=await sb.from('paradas').select('usuario_id,motivo,inicio,fin').gte('inicio',hIso);
-      const {data:turs}=await sb.from('turnos').select('usuario_id,inicio,fin').gte('inicio',hIso);
+      const {data:ops}=await sb.from('puestos_trabajo').select('id,nombre').eq('activo',true).order('nombre');
+      const {data:evs}=await sb.from('fabricacion_eventos').select('unidad_id,ot,sku,puesto_id,tipo,ts').gte('ts',hIso);
+      const {data:pars}=await sb.from('paradas').select('puesto_id,motivo,inicio,fin').gte('inicio',hIso);
+      const {data:turs}=await sb.from('turnos').select('puesto_id,inicio,fin').gte('inicio',hIso);
       const now=Date.now();
       this._ops=(ops||[]).map(o=>{
-        const evO=(evs||[]).filter(e=>e.usuario_id===o.id);
+        const evO=(evs||[]).filter(e=>e.puesto_id===o.id);
         const byU={}; evO.forEach(e=>{(byU[e.unidad_id]=byU[e.unidad_id]||[]).push(e);});
         let enCurso=[], hechas=0, durs=[];
         for(const uid in byU){
@@ -1399,11 +1407,11 @@ const Enc = {
           fins.forEach((f,i)=>{ hechas++; const ini=inis[i]; if(ini){const d=(new Date(f.ts)-new Date(ini.ts))/1000; if(d>0&&d<86400)durs.push(d);} });
           if(inis.length>fins.length){ const li=inis[inis.length-1]; enCurso.push({sku:li.sku,ot:li.ot,uid,start:new Date(li.ts).getTime()}); }
         }
-        const paroAct=(pars||[]).find(p=>p.usuario_id===o.id && !p.fin);
-        const parosHoy=(pars||[]).filter(p=>p.usuario_id===o.id);
+        const paroAct=(pars||[]).find(p=>p.puesto_id===o.id && !p.fin);
+        const parosHoy=(pars||[]).filter(p=>p.puesto_id===o.id);
         const media=durs.length?durs.reduce((a,b)=>a+b,0)/durs.length:0;
         const uxh=media?Math.round(3600/media):0;
-        const turno=(turs||[]).filter(t=>t.usuario_id===o.id).sort((a,b)=>new Date(b.inicio)-new Date(a.inicio))[0];
+        const turno=(turs||[]).filter(t=>t.puesto_id===o.id).sort((a,b)=>new Date(b.inicio)-new Date(a.inicio))[0];
         let turnoDur=0, prodSeg=0, ocup=null, turnoAbierto=false;
         if(turno){
           const ini=new Date(turno.inicio).getTime();
@@ -1421,7 +1429,7 @@ const Enc = {
     }catch(e){ $('#opsList').innerHTML='<div class="vacio">Error: '+esc(e.message)+'</div>'; }
   },
   renderOperarios(){
-    if(!this._ops||!this._ops.length){ $('#opsList').innerHTML='<div class="vacio">Sin operarios.</div>'; return; }
+    if(!this._ops||!this._ops.length){ $('#opsList').innerHTML='<div class="vacio">Sin puestos.</div>'; return; }
     $('#opsList').innerHTML=this._ops.map((x,xi)=>{
       const st = x.paroAct ? `<span class="badge par">${esc(x.paroAct.motivo)}</span>`
                : x.enCurso.length ? `<span class="badge act">Fabricando</span>`
