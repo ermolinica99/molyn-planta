@@ -680,9 +680,11 @@ const Login = {
     const saved = sessionStorage.getItem('molyn_user');
     if(saved){ this.enter(JSON.parse(saved)); return; }
     try{
-      const {data, error} = await sb.from('usuarios').select('id,nombre,rol,pin').eq('activo',true).order('rol').order('nombre');
+      const {data, error} = await sb.from('usuarios').select('id,nombre,rol,pin,puesto_id').eq('activo',true).order('rol').order('nombre');
       if(error) throw error;
       this.users = data || [];
+      this.puestos={};
+      try{ const {data:ps}=await sb.from('puestos_trabajo').select('id,nombre'); (ps||[]).forEach(p=>this.puestos[p.id]=p.nombre); }catch(e){}
       this.renderUsers();
     }catch(e){ toast('No se pudo conectar: '+e.message,'err'); }
   },
@@ -691,10 +693,11 @@ const Login = {
     c.innerHTML = this.users.map((u,i)=>{
       const [bg,fg] = AV_COLORS[u.rol]||AV_COLORS.operario;
       const ini = (u.nombre||'?').trim().charAt(0).toUpperCase();
+      const puesto=(this.puestos||{})[u.puesto_id];
       return `<div class="ucard" onclick="Login.pick(${i})">
         <div class="av" style="background:${bg};color:${fg}">${ini}</div>
         <div class="nm">${esc(u.nombre)}</div>
-        <div class="rl">${esc(ROL_LBL[u.rol]||u.rol)}</div></div>`;
+        <div class="rl">${esc(ROL_LBL[u.rol]||u.rol)}${puesto?' · '+esc(puesto):''}</div></div>`;
     }).join('');
   },
   pick(i){
