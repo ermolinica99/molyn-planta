@@ -569,10 +569,11 @@ const ICO = {
   coffee:_svg('<path d="M17 8h1a4 4 0 0 1 0 8h-1"/><path d="M3 8h14v9a4 4 0 0 1-4 4H7a4 4 0 0 1-4-4V8z"/>'),
   food:  _svg('<path d="M3 2v7a3 3 0 0 0 6 0V2"/><path d="M6 9v13"/><path d="M18 2v20"/><path d="M15 2c0 4 6 4 6 0"/>'),
   wrench:_svg('<path d="M14.7 6.3a4 4 0 0 0 5 5l-9.6 9.6a2.8 2.8 0 0 1-4-4L15.7 7.3z"/>'),
-  box:   _svg('<path d="M21 8l-9-5-9 5v8l9 5 9-5V8z"/><path d="M3 8l9 5 9-5"/>')
+  box:   _svg('<path d="M21 8l-9-5-9 5v8l9 5 9-5V8z"/><path d="M3 8l9 5 9-5"/>'),
+  swap:  _svg('<path d="M17 3l4 4-4 4"/><path d="M21 7H3"/><path d="M7 21l-4-4 4-4"/><path d="M3 17h18"/>')
 };
 const MOTIVOS = [
-  ['Desayuno','coffee'],['Comida','food'],['Avería','wrench'],['Falta material','box'],['Retrabajo','refresh'],['Otro','plus']
+  ['Desayuno','coffee'],['Comida','food'],['Avería','wrench'],['Falta material','box'],['Retrabajo','refresh'],['Cambio de puesto','swap'],['Otro','plus']
 ];
 function solaparSeg(iniMs,finMs,intervalos){
   let t=0;
@@ -865,6 +866,15 @@ const Op = {
     this.mostrarParo();
     toast('Parada automática por inactividad','err');
   },
+  // se llama justo al terminar una unidad si no queda nada más en curso: cuenta el
+  // hueco hasta la siguiente OT como "Preparación" en vez de dejarlo sin contar
+  async autoPreparacion(){
+    if(this.paro || !this.turno || this.enCurso.size>0 || this.serie) return;
+    const inicio=new Date().toISOString();
+    qInsert('paradas',{usuario_id:this.user.id, motivo:'Preparación', inicio});
+    this.paro={motivo:'Preparación', inicio}; this.paroInicio=new Date(inicio).getTime();
+    this.mostrarParo();
+  },
   renderTurno(){
     const on=!!this.turno;
     $('#turnoOn').classList.toggle('hidden',!on);
@@ -930,7 +940,7 @@ const Op = {
     code=String(code).trim().toUpperCase();
     if(!this.turno){ toast('Comienza el turno primero','err'); beep(false); return; }
     if(this.paro){
-      if(this.paro.motivo==='Inactividad'){ await this.reanudar(true); }
+      if(this.paro.motivo==='Inactividad'||this.paro.motivo==='Preparación'){ await this.reanudar(true); }
       else { toast('Hay una parada activa. Reanuda para seguir.','err'); beep(false); return; }
     }
     if(this.serie){ toast('Tienes un lote en curso. Ciérralo con los botones.','err'); beep(false); return; }
@@ -1005,6 +1015,7 @@ const Op = {
     this.serie=null; this.serieSel=0; this.clearSerie();
     this.markActivity();
     if(sku && (this.stdSku[sku]===undefined || this.provisional.has(sku))) this.aprenderTiempo(sku);
+    this.autoPreparacion();
     this.render();
   },
   cancelarSerie(){
@@ -1036,6 +1047,7 @@ const Op = {
     toast('Terminada '+code+' ('+fmtDur(seg)+')','ok'); beep(true,true);
     this.markActivity();
     if(it.sku && (this.stdSku[it.sku]===undefined || this.provisional.has(it.sku))) this.aprenderTiempo(it.sku);
+    this.autoPreparacion();
     this.render();
   },
 
