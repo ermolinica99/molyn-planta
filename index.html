@@ -1366,11 +1366,18 @@ const Enc = {
     code=String(code).trim().toUpperCase();
     if(this.cart.has(code)){ toast('Ya está en la lista','err'); return; }
     let u=null, notFound=false;
-    try{ const {data}=await sb.from('unidades').select('id,ot,sku,estado').eq('id',code).limit(1); if(data&&data.length) u=data[0]; else notFound=true; }
+    try{ const {data}=await sb.from('unidades').select('id,ot,sku,estado,fabricada_at').eq('id',code).limit(1); if(data&&data.length) u=data[0]; else notFound=true; }
     catch(e){ u=null; }
     if(notFound){ toast('Código no reconocido: '+code,'err'); beep(false); return; }
     if(u){
       if(u.estado!=='stock'){ toast(u.estado==='pendiente'?'Aún no fabricada':'No consumible ('+u.estado+')','err'); beep(false); return; }
+      if(u.fabricada_at){
+        const dispo=new Date(u.fabricada_at).getTime()+this.mad*86400000;
+        if(Date.now()<dispo){
+          const fFecha=new Date(dispo).toLocaleDateString('es-ES',{day:'2-digit',month:'2-digit',year:'numeric'});
+          if(!confirm('⚠️ '+code+' todavía está en MADURACIÓN (disponible el '+fFecha+').\n\n¿Seguro que quieres consumirlo de todos modos?')){ beep(false); return; }
+        }
+      }
       this.cart.set(code,{unidad_id:code,ot:u.ot,sku:u.sku,nombre:this.prodMap[u.sku]||u.sku});
     }else{
       this.cart.set(code,{unidad_id:code,ot:(code.split('-')[0]||''),sku:'',nombre:code});
