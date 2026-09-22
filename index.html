@@ -773,7 +773,7 @@ const Op = {
   serie:null, serieSel:0,
   paro:null, paroInicio:null, prodMap:{}, avgCache:{}, cam:null, camOn:false,
   lastScan:{code:null, t:0}, ticking:false,
-  turno:null, turnoInicio:null, paradasSeg:0, cfg:{descanso_min:60}, stdSku:{}, provisional:new Set(),
+  turno:null, turnoInicio:null, paradasSeg:0, paradasSesion:[], cfg:{descanso_min:60}, stdSku:{}, provisional:new Set(),
   lastActivityTs:null,
 
   async init(u){
@@ -845,16 +845,18 @@ const Op = {
         this.turno=data[0]; this.turnoInicio=new Date(data[0].inicio).getTime();
         const {data:pars}=await sb.from('paradas').select('inicio,fin').eq('puesto_id',this.user.id).gte('inicio',data[0].inicio);
         this.paradasSeg=(pars||[]).filter(p=>p.fin).reduce((a,p)=>a+(new Date(p.fin)-new Date(p.inicio))/1000,0);
+        this.paradasSesion=(pars||[]).map(p=>({inicio:new Date(p.inicio).getTime(), fin:p.fin?new Date(p.fin).getTime():null}));
       }
     }catch(e){}
   },
   async comenzarTurno(){
     const inicio=new Date().toISOString();
     qInsert('turnos',{puesto_id:this.user.id, inicio});
-    this.turno={inicio}; this.turnoInicio=new Date(inicio).getTime(); this.paradasSeg=0;
+    this.turno={inicio}; this.turnoInicio=new Date(inicio).getTime(); this.paradasSeg=0; this.paradasSesion=[];
     this.markActivity();
     toast('Turno iniciado','ok'); beep(true);
     this.renderTurno();
+    this.autoPreparacion(); // hasta que se escanee la primera unidad, cuenta como preparación
   },
   async finalizarTurno(){
     if(!this.turno) return;
@@ -866,7 +868,7 @@ const Op = {
     const prod=Math.max(0,dur-this.paradasSeg);
     const ocup=dur>0?Math.round(prod/dur*100):0;
     alert(`Turno finalizado.\n\nTurno: ${fmtHM(dur)}\nParadas: ${fmtHM(this.paradasSeg)}\nProductivo: ${fmtHM(prod)}\nOcupación: ${ocup}%\nHechas: ${this.hechasHoy}`);
-    this.turno=null; this.turnoInicio=null; this.paradasSeg=0;
+    this.turno=null; this.turnoInicio=null; this.paradasSeg=0; this.paradasSesion=[];
     this.renderTurno();
   },
   async autoParada(){
@@ -875,6 +877,7 @@ const Op = {
     qInsert('paradas',{puesto_id:this.user.id, motivo:'Inactividad', inicio});
     this.paro={motivo:'Inactividad', inicio}; this.paroInicio=new Date(inicio).getTime();
     this.mostrarParo();
+    this.paradasSesion.push({inicio:this.paroInicio, fin:null});
     toast('Parada automática por inactividad','err');
   },
   // se llama justo al terminar una unidad si no queda nada más en curso: cuenta el
@@ -885,6 +888,7 @@ const Op = {
     qInsert('paradas',{puesto_id:this.user.id, motivo:'Preparación', inicio});
     this.paro={motivo:'Preparación', inicio}; this.paroInicio=new Date(inicio).getTime();
     this.mostrarParo();
+    this.paradasSesion.push({inicio:this.paroInicio, fin:null});
   },
   renderTurno(){
     const on=!!this.turno;
@@ -1119,11 +1123,14 @@ const Op = {
     const inicio=new Date().toISOString();
     qInsert('paradas',{puesto_id:this.user.id, motivo, inicio});
     this.paro={motivo, inicio}; this.paroInicio=new Date(inicio).getTime(); this.mostrarParo();
+    this.paradasSesion.push({inicio:this.paroInicio, fin:null});
   },
   async reanudar(silent){
     if(!this.paro) return;
     qUpdate('paradas', {puesto_id:this.user.id, fin:null}, {fin:new Date().toISOString()});
     if(this.turno && this.paroInicio){ this.paradasSeg += (Date.now()-this.paroInicio)/1000; }
+    const abierta=this.paradasSesion[this.paradasSesion.length-1];
+    if(abierta && abierta.fin==null) abierta.fin=Date.now();
     this.paro=null; this.paroInicio=null;
     this.markActivity();
     $('#paroBanner').classList.add('hidden');
@@ -1160,8 +1167,9 @@ const Op = {
   // ---------- render / tick ----------
   tick(){
     const now=Date.now();
+    const intervalosParo=this.paradasSesion.map(p=>[p.inicio, p.fin==null?now:p.fin]);
     this.enCurso.forEach((it)=>{
-      const seg=(now-it.start)/1000;
+      const seg=(now-it.start)/1000 - solaparSeg(it.start,now,intervalosParo);
       const el=document.getElementById('c_'+cssId(it.unidad_id));
       if(el) el.textContent=fmtDur(seg);
       const std=this.stdSku[it.sku]||0;
@@ -1176,7 +1184,7 @@ const Op = {
       }
     });
     if(this.paro){ $('#paroTiempo').textContent=fmtDur((now-this.paroInicio)/1000); }
-    if(this.serie){ const el=document.getElementById('serieCrono'); if(el) el.textContent=fmtDur((now-this.serie.start)/1000); }
+    if(this.serie){ const el=document.getElementById('serieCrono'); if(el) el.textContent=fmtDur((now-this.serie.start)/1000 - solaparSeg(this.serie.start,now,intervalosParo)); }
     if(this.turno){
       const dur=(now-this.turnoInicio)/1000;
       let paradas=this.paradasSeg + (this.paro? (now-this.paroInicio)/1000 : 0);
@@ -1201,6 +1209,7 @@ const Op = {
         <div class="snom">${esc(s.nombre)}</div>
         <div class="ssub">${esc(s.ot)} · ${n} unidad${n===1?'':'es'} pendiente${n===1?'':'s'}</div>
         <div class="ssub" style="margin-top:4px">Llevas <b id="serieCrono">0:00</b> con este lote</div>
+        <div class="ssub" style="margin-top:2px">Tiempo teórico para terminar: <b>${fmtDur((this.stdSku[s.sku]||270)*n)}</b></div>
         <div class="sbtns">
           <button class="btodas" onclick="Op.terminarSerie(${n})">${ICO.check}Terminar ${n===1?'la unidad':'las '+n}</button>
           <button class="balgunas" onclick="Op.toggleAlgunas()">Terminar solo algunas</button>
