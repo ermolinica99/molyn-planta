@@ -793,6 +793,11 @@ const Op = {
     });
     const semActual=isoWeekInfo(new Date()).label;
     (ts||[]).forEach(t=>{ this.stdSku[t.sku]=Number(t.mediana_seg); if(t.semana===semActual) this.provisional.add(t.sku); });
+    this.tiempoTeoricoPrograma={};
+    try{
+      const {data:lp}=await sb.from('lotes_programa').select('programa,tiempo_teorico_seg');
+      (lp||[]).forEach(r=>{ if(r.tiempo_teorico_seg) this.tiempoTeoricoPrograma[r.programa]=r.tiempo_teorico_seg; });
+    }catch(e){}
     await this.comprobarTurno();
     this.loadSerie();
     await this.reconstruir();
@@ -814,6 +819,9 @@ const Op = {
     set('.scan-tools .btn-paro', ICO.pause+'Parada');
     set('#motivosBox', MOTIVOS.map(m=>`<button onclick="Op.iniciarParada('${m[0]}')">${ICO[m[1]]}${m[0]}</button>`).join(''));
   },
+
+  // tiempo teórico por defecto de un núcleo: el de su programa (N001-N012) si está configurado, si no 4:30
+  tiempoDefaultDe(sku){ return (this.tiempoTeoricoPrograma&&this.tiempoTeoricoPrograma[progDe(sku)])||270; },
 
   async clasificarNucleos(){
     this.tipoSku={};
@@ -898,7 +906,9 @@ const Op = {
   },
 
   async reconstruir(){
-    this.enCurso.clear(); this.hechasHoy=0; this.duracionesHoy=[]; this.ultimas=[]; this.serie=null; this.__algunas=false;
+    // OJO: no tocar this.serie aquí — loadSerie() ya lo restauró de localStorage justo antes
+    // de llamar a esta función, y machacarlo a null deshacía la recuperación del lote en curso
+    this.enCurso.clear(); this.hechasHoy=0; this.duracionesHoy=[]; this.ultimas=[]; this.__algunas=false;
     try{
       const {data:evs}=await sb.from('fabricacion_eventos')
         .select('unidad_id,ot,sku,tipo,ts').eq('puesto_id',this.user.id).order('ts');
@@ -1209,7 +1219,7 @@ const Op = {
         <div class="snom">${esc(s.nombre)}</div>
         <div class="ssub">${esc(s.ot)} · ${n} unidad${n===1?'':'es'} pendiente${n===1?'':'s'}</div>
         <div class="ssub" style="margin-top:4px">Llevas <b id="serieCrono">0:00</b> con este lote</div>
-        <div class="ssub" style="margin-top:2px">Tiempo teórico para terminar: <b>${fmtDur((this.stdSku[s.sku]||270)*n)}</b></div>
+        <div class="ssub" style="margin-top:2px">Tiempo teórico para terminar: <b>${fmtDur((this.stdSku[s.sku]||this.tiempoDefaultDe(s.sku))*n)}</b></div>
         <div class="sbtns">
           <button class="btodas" onclick="Op.terminarSerie(${n})">${ICO.check}Terminar ${n===1?'la unidad':'las '+n}</button>
           <button class="balgunas" onclick="Op.toggleAlgunas()">Terminar solo algunas</button>
@@ -1234,8 +1244,8 @@ const Op = {
     $('#enCursoVacio').classList.toggle('hidden', arr.length>0);
     cont.innerHTML=arr.map(it=>{
       const nom=this.prodMap[it.sku]||it.sku;
-      const std=this.stdSku[it.sku]||0;
-      const refTxt = std? `ref. ${fmtDur(std)}` : 'sin referencia';
+      const std=this.stdSku[it.sku]||this.tiempoDefaultDe(it.sku);
+      const refTxt = this.stdSku[it.sku]? `ref. ${fmtDur(std)}` : `teórico ${fmtDur(std)}`;
       return `<div class="urow curso" id="row_${cssId(it.unidad_id)}">
         <div style="flex:1;min-width:0">
           <div class="uid">${esc(it.unidad_id)}</div>
@@ -1258,6 +1268,7 @@ const Op = {
   }
 };
 
+function progDe(sku){ const m=(sku||'').match(/N\d{3}/); return m?m[0]:'—'; }
 function fmtDur(s){s=Math.max(0,Math.floor(s));const m=Math.floor(s/60),ss=s%60;if(m>=60){const h=Math.floor(m/60);return h+':'+String(m%60).padStart(2,'0')+':'+String(ss).padStart(2,'0');}return m+':'+String(ss).padStart(2,'0');}
 function medianaJs(a){if(!a.length)return 0;const v=[...a].sort((x,y)=>x-y);const n=v.length;return n%2?v[(n-1)/2]:(v[n/2-1]+v[n/2])/2;}
 function isoWeekInfo(d){
