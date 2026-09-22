@@ -842,6 +842,11 @@ const Op = {
         this.tipoSku[sku]= D<umbral ? 'personalizado' : 'diario';
       }
     }catch(e){}
+    // "forzar a diario" manda por encima del cálculo por consumo (igual que en Oficina)
+    try{
+      const {data:forz}=await sb.from('productos').select('sku').eq('forzar_diario',true);
+      (forz||[]).forEach(p=>{ this.tipoSku[p.sku]='diario'; });
+    }catch(e){}
   },
   esDiario(sku){ return this.tipoSku && this.tipoSku[sku]==='diario'; },
 
@@ -1343,7 +1348,17 @@ const Enc = {
     if(sec==='inventario') this.loadAjustes();
     if(sec==='partes') this.loadPartes();
     if(sec==='lotes') this.loadLotes();
+    this.startAutoSec();
   },
+  // refresco automático de la pestaña abierta (stock/puestos/inventario/partes/lotes), cada 5s.
+  // "consumo" no se toca: ahí el encargado está escribiendo/escaneando activamente.
+  startAutoSec(){
+    this.stopAutoSec();
+    const recargar={stock:()=>this.loadStock(), operarios:()=>this.loadOperarios(), inventario:()=>this.loadAjustes(), partes:()=>this.loadPartes(), lotes:()=>this.loadLotes()};
+    const fn=recargar[this.sec];
+    if(fn) this._secTimer=setInterval(fn,5000);
+  },
+  stopAutoSec(){ if(this._secTimer){ clearInterval(this._secTimer); this._secTimer=null; } },
 
   // ---------- CONSUMO ----------
   manualConsumo(){ const c=$('#manualC').value.trim().toUpperCase(); if(c){ $('#manualC').value=''; this.addCart(c); } },
