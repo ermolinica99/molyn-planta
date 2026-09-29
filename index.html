@@ -624,16 +624,21 @@ const Q = {
       try{ await this.exec(op); this.items.shift(); this.save(); ok++; }
       catch(e){
         const msg=(e&&e.message)||String(e);
-        if(/Failed to fetch|NetworkError|network|fetch/i.test(msg)){ break; }
+        // clave duplicada al insertar: el envío anterior sí llegó a la base de datos aunque se
+        // perdiera la respuesta (corte de red). Ya está guardado, así que se da por enviado.
+        if(op.t==='insert' && e && e.code==='23505'){ this.items.shift(); this.save(); ok++; continue; }
+        if(/Failed to fetch|NetworkError|network|fetch|timeout|Load failed/i.test(msg)){ break; }
         op._attempts=(op._attempts||0)+1;
-        if(op._attempts>=3){
+        if(op._attempts>=5){
           this.items.shift();
           this.failed.push(Object.assign({},op,{_error:msg,_failedAt:new Date().toISOString()}));
           this.saveFailed();
           fail++;
-          console.error('Molyn: operación descartada tras 3 intentos', op, msg);
+          console.error('Molyn: operación descartada tras 5 intentos', op, msg);
         }else{
-          this.items.shift(); this.items.push(op); this.save();
+          // se deja en su sitio (sin reordenar: el orden importa, p. ej. inicio antes que fin)
+          // y se reintenta en el siguiente ciclo de sincronización
+          this.save(); break;
         }
       }
     }
@@ -664,12 +669,46 @@ async function readCached(k, fn){
   catch(e){}
   const c=Cache.get(k); return c!=null? c : null;
 }
+// Supabase devuelve como mucho 1000 filas por consulta: esto pagina hasta traerlas todas.
+// 'order' debe dar un orden estable (si no, al paginar se pueden saltar o repetir filas).
+async function selAll(build, order){
+  let out=[], from=0; const size=1000;
+  while(true){
+    let q=build(); (order||[]).forEach(c=>{ q=q.order(c); });
+    const {data,error}=await q.range(from,from+size-1);
+    if(error) throw error;
+    out=out.concat(data||[]);
+    if(!data||data.length<size) break;
+    from+=size;
+  }
+  return out;
+}
+// fecha YYYY-MM-DD en hora LOCAL (toISOString usa UTC y de 00:00 a 02:00 da el día anterior)
+function ymdLocal(d){ return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); }
+
+// mantiene la pantalla encendida con la app abierta: si la tablet se bloquea, el JS se congela y
+// dejan de correr los cronómetros, la parada automática y la sincronización
+const Wake={ lock:null,
+  async on(){
+    try{
+      if(!('wakeLock' in navigator) || this.lock || document.visibilityState!=='visible') return;
+      this.lock=await navigator.wakeLock.request('screen');
+      this.lock.addEventListener('release',()=>{ this.lock=null; });
+    }catch(e){ this.lock=null; }
+  }
+};
+document.addEventListener('visibilitychange',()=>{
+  if(document.visibilityState!=='visible') return;
+  if(!$('#app').classList.contains('hidden')) Wake.on();
+  Q.flush(); // al volver a la app, envía lo que quedó pendiente mientras estaba en segundo plano
+});
 
 window.addEventListener('online', ()=>{ Q.badge(); Q.flush(); toast('Conexión recuperada','ok'); });
 window.addEventListener('offline', ()=>{ Q.badge(); toast('Sin conexión — se guardará local','err'); });
 
 const $ = s => document.querySelector(s);
-function toast(msg, type){const t=$('#toast');t.textContent=msg;t.className='toast show '+(type||'');setTimeout(()=>t.className='toast',1800)}
+let _toastT=null;
+function toast(msg, type){const t=$('#toast');t.textContent=msg;t.className='toast show '+(type||'');clearTimeout(_toastT);_toastT=setTimeout(()=>t.className='toast',type==='err'?4000:2200)}
 
 const AV_COLORS = {operario:['#F7E8E0','#B0552F'], encargado:['#E1EAEF','#3C6375']};
 const ROL_LBL = {operario:'Operario', encargado:'Encargado'};
@@ -678,22 +717,41 @@ const Login = {
   // "users" mezcla puestos de trabajo (login compartido, sin persona concreta)
   // y encargados (login personal, como antes). Los operarios ya no inician
   // sesión individual: se fichan como parte de un puesto.
-  users: [], sel: null, pin: '',
+  users: [], sel: null, pin: '', fallos: 0, bloqueoHasta: 0,
+  // la sesión de un PUESTO se guarda en localStorage (tablet fija del puesto: sobrevive a cerrar
+  // la app o reiniciar la tablet); la del ENCARGADO solo en sessionStorage (PIN personal)
+  savedUser(){
+    try{ const s=sessionStorage.getItem('molyn_user')||localStorage.getItem('molyn_puesto_user'); return s?JSON.parse(s):null; }catch(e){ return null; }
+  },
   async init(){
-    const saved = sessionStorage.getItem('molyn_user');
-    if(saved){ this.enter(JSON.parse(saved)); return; }
-    try{
+    const saved = this.savedUser();
+    if(saved){
+      this.enter(saved);
+      // si en Oficina han desactivado o borrado este puesto/encargado, se cierra la sesión guardada
+      const tabla = saved.tipo==='puesto' ? 'puestos_trabajo' : 'usuarios';
+      sb.from(tabla).select('id,activo').eq('id',saved.id).then(({data,error})=>{
+        if(!error && data && (!data.length || data[0].activo===false)){
+          try{ sessionStorage.removeItem('molyn_user'); localStorage.removeItem('molyn_puesto_user'); }catch(e){}
+          alert('Este usuario ya no está activo. Vuelve a elegir usuario.'); location.reload();
+        }
+      });
+      return;
+    }
+    // si no hay red al abrir la app, se usa la última lista de usuarios conocida
+    const users = await readCached('login_users', async()=>{
       const [{data:puestos,error:e1},{data:encs,error:e2}] = await Promise.all([
         sb.from('puestos_trabajo').select('id,nombre,pin').eq('activo',true).order('nombre'),
         sb.from('usuarios').select('id,nombre,pin').eq('rol','encargado').eq('activo',true).order('nombre')
       ]);
       if(e1) throw e1; if(e2) throw e2;
-      this.users = [
+      return [
         ...(puestos||[]).map(p=>({id:p.id, nombre:p.nombre, pin:p.pin, tipo:'puesto'})),
         ...(encs||[]).map(u=>({id:u.id, nombre:u.nombre, pin:u.pin, tipo:'encargado'}))
       ];
-      this.renderUsers();
-    }catch(e){ toast('No se pudo conectar: '+e.message,'err'); }
+    });
+    if(!users){ $('#usersList').innerHTML='<div class="vacio" style="grid-column:1/-1;text-align:center">No se pudo conectar con el servidor. Comprueba la conexión y <a href="#" onclick="event.preventDefault();location.reload()">vuelve a intentarlo</a>.</div>'; return; }
+    this.users = users;
+    this.renderUsers();
   },
   renderUsers(){
     const c = $('#usersList');
@@ -709,6 +767,8 @@ const Login = {
   },
   pick(i){
     this.sel = this.users[i]; this.pin='';
+    // puesto creado en Oficina "sin PIN": entra directamente (antes se quedaba bloqueado en el teclado)
+    if(!this.sel.pin){ this.check(); return; }
     $('#userStep').classList.add('hidden');
     $('#pinStep').classList.remove('hidden');
     $('#pinName').textContent = this.sel.nombre;
@@ -728,19 +788,28 @@ const Login = {
     $('#pinDots').innerHTML = h;
   },
   key(k){
+    const espera=Math.ceil((this.bloqueoHasta-Date.now())/1000);
+    if(espera>0){ $('#pinErr').textContent='Demasiados intentos. Espera '+espera+' s'; return; }
     if(k==='⌫'){ this.pin=this.pin.slice(0,-1); }
     else if(this.pin.length < 8){ this.pin+=k; }
     this.renderDots();
-    if(this.pin.length === (this.sel.pin||'').length) this.check();
+    if(this.pin.length === String(this.sel.pin||'').length) this.check();
   },
   check(){
-    if(this.pin === String(this.sel.pin)){
+    if(!this.sel.pin || this.pin === String(this.sel.pin)){
+      this.fallos=0;
       const u = {id:this.sel.id, nombre:this.sel.nombre, tipo:this.sel.tipo};
-      sessionStorage.setItem('molyn_user', JSON.stringify(u));
+      try{
+        if(u.tipo==='puesto') localStorage.setItem('molyn_puesto_user', JSON.stringify(u));
+        else sessionStorage.setItem('molyn_user', JSON.stringify(u));
+      }catch(e){}
       this.enter(u);
     }else{
-      $('#pinErr').textContent = 'PIN incorrecto';
-      this.pin=''; this.renderDots();
+      this.fallos++;
+      // freno contra probar PINs al azar: tras 5 fallos seguidos, 30 s de espera
+      if(this.fallos>=5){ this.fallos=0; this.bloqueoHasta=Date.now()+30000; $('#pinErr').textContent='Demasiados intentos. Espera 30 s'; }
+      else $('#pinErr').textContent = 'PIN incorrecto';
+      this.pin=''; this.renderDots(); beep(false);
     }
   },
   back(){
@@ -752,6 +821,7 @@ const Login = {
     $('#login').classList.add('hidden');
     $('#app').classList.remove('hidden');
     $('#whoName').innerHTML = `<b>${esc((u.nombre||'').split(' ')[0])}</b>`;
+    Wake.on();
     const esPuesto = u.tipo==='puesto';
     $('#viewOperario').classList.toggle('hidden', !esPuesto);
     $('#viewEncargado').classList.toggle('hidden', esPuesto);
@@ -759,7 +829,10 @@ const Login = {
     else Enc.init(u);
   },
   logout(){
-    sessionStorage.removeItem('molyn_user');
+    if(typeof Op!=='undefined' && Op.user && (Op.serie || Op.enCurso.size)){
+      if(!confirm('Tienes trabajo en curso en este puesto. Si sales, seguirá abierto y lo recuperarás al volver a entrar.\n\n¿Salir igualmente?')) return;
+    }
+    try{ sessionStorage.removeItem('molyn_user'); localStorage.removeItem('molyn_puesto_user'); }catch(e){}
     location.reload();
   }
 };
@@ -771,7 +844,7 @@ function esc(s){return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;',
 const Op = {
   user:null, enCurso:new Map(), ultimas:[], hechasHoy:0, duracionesHoy:[],
   serie:null, serieSel:0,
-  paro:null, paroInicio:null, prodMap:{}, avgCache:{}, cam:null, camOn:false,
+  paro:null, paroInicio:null, prodMap:{}, cam:null, camOn:false,
   lastScan:{code:null, t:0}, ticking:false,
   turno:null, turnoInicio:null, paradasSeg:0, paradasSesion:[], cfg:{descanso_min:60}, stdSku:{}, provisional:new Set(),
   lastActivityTs:null,
@@ -828,7 +901,10 @@ const Op = {
     const umbral=Number(this.cfg.umbral_semanal!=null?this.cfg.umbral_semanal:1);
     const diasHist=Number(this.cfg.dias_historico||30);
     try{
-      const {data}=await sb.from('unidades').select('sku,consumida_at').eq('estado','consumida');
+      // igual que Oficina: solo el consumo de los últimos 35 días, paginado (antes traía TODO el
+      // histórico y, al pasar de 1000 consumos, se cortaba y la clasificación salía mal)
+      const cutoff=new Date(Date.now()-35*86400000).toISOString();
+      const data=await selAll(()=>sb.from('unidades').select('sku,consumida_at').eq('estado','consumida').gte('consumida_at',cutoff),['id']);
       const byS={};
       (data||[]).forEach(u=>{
         if(!u.consumida_at) return;
@@ -863,6 +939,7 @@ const Op = {
     }catch(e){}
   },
   async comenzarTurno(){
+    if(this.turno) return; // evita abrir dos turnos con un doble toque
     const inicio=new Date().toISOString();
     qInsert('turnos',{puesto_id:this.user.id, inicio});
     this.turno={inicio}; this.turnoInicio=new Date(inicio).getTime(); this.paradasSeg=0; this.paradasSesion=[];
@@ -873,8 +950,11 @@ const Op = {
   },
   async finalizarTurno(){
     if(!this.turno) return;
-    if(this.paro){ toast('Reanuda la parada antes de finalizar','err'); return; }
-    if(!confirm('¿Finalizar tu turno?')) return;
+    if(this.paro && this.paro.motivo!=='Preparación' && this.paro.motivo!=='Inactividad'){ toast('Reanuda la parada antes de finalizar','err'); return; }
+    const abierto=this.serie?'un lote abierto':(this.enCurso.size?this.enCurso.size+' unidad(es) en fabricación':'');
+    if(!confirm(abierto?'Tienes '+abierto+' sin terminar. Seguirá abierto para el próximo turno.\n\n¿Finalizar tu turno igualmente?':'¿Finalizar tu turno?')) return;
+    // la parada automática (preparación/inactividad) se cierra junto con el turno
+    if(this.paro) await this.reanudar(true);
     const fin=Date.now();
     qUpdate('turnos', {puesto_id:this.user.id, fin:null}, {fin:new Date().toISOString()});
     const dur=(fin-this.turnoInicio)/1000;
@@ -915,8 +995,11 @@ const Op = {
     // de llamar a esta función, y machacarlo a null deshacía la recuperación del lote en curso
     this.enCurso.clear(); this.hechasHoy=0; this.duracionesHoy=[]; this.ultimas=[]; this.__algunas=false;
     try{
-      const {data:evs}=await sb.from('fabricacion_eventos')
-        .select('unidad_id,ot,sku,tipo,ts').eq('puesto_id',this.user.id).order('ts');
+      // solo las últimas 2 semanas y paginado: antes traía TODO el historial del puesto y, al pasar
+      // de 1000 eventos, Supabase cortaba y se perdían precisamente los más recientes (lo de hoy)
+      const desde=new Date(Date.now()-14*86400000).toISOString();
+      const evs=await selAll(()=>sb.from('fabricacion_eventos')
+        .select('unidad_id,ot,sku,tipo,ts').eq('puesto_id',this.user.id).gte('ts',desde),['ts','unidad_id','tipo']);
       const byU={};
       (evs||[]).forEach(e=>{(byU[e.unidad_id]=byU[e.unidad_id]||[]).push(e);});
       const hoy=new Date(); hoy.setHours(0,0,0,0);
@@ -1015,38 +1098,39 @@ const Op = {
     this.serieSel=pend.length;
     qInsert('fabricacion_eventos',{unidad_id:marker,ot:u.ot,sku:u.sku,puesto_id:this.user.id,tipo:'inicio',ts:startIso});
     this.saveSerie();
-    if(u.sku) this.avgSku(u.sku);
     toast('Lote abierto · '+pend.length+' uds pendientes','ok'); beep(true);
     this.render();
   },
   async terminarSerie(count){
-    const s=this.serie; if(!s) return;
-    count=Math.max(1, Math.min(count, s.pendientes.length));
-    const finMs=Date.now();
-    const retra=await this.retrabajosDe(new Date(s.start).toISOString(), new Date(finMs).toISOString());
-    const total=Math.max(1,(finMs-s.start)/1000 - solaparSeg(s.start,finMs,retra));
-    const per=total/count;
-    const units=s.pendientes.slice(0,count);
-    units.forEach((uid,i)=>{
-      const iniTs=new Date(s.start + per*i*1000).toISOString();
-      const finTs=new Date(s.start + per*(i+1)*1000).toISOString();
-      if(!(i===0 && uid===s.marker)){
-        qInsert('fabricacion_eventos',{unidad_id:uid,ot:s.ot,sku:s.sku,puesto_id:this.user.id,tipo:'inicio',ts:iniTs});
-      }
-      qInsert('fabricacion_eventos',{unidad_id:uid,ot:s.ot,sku:s.sku,puesto_id:this.user.id,tipo:'fin',ts:finTs});
-      qUpdate('unidades',{id:uid},{estado:'stock',fabricada_at:finTs});
-      this.hechasHoy++; this.duracionesHoy.push(per);
-      this.ultimas.unshift({unidad_id:uid,sku:s.sku,seg:per});
-    });
-    this.ultimas=this.ultimas.slice(0,10);
-    this.avgCache[s.sku]=null;
-    const sku=s.sku;
-    toast(count+' uds terminadas · '+fmtDur(per)+' c/u','ok'); beep(true,true);
-    this.serie=null; this.serieSel=0; this.clearSerie();
-    this.markActivity();
-    if(sku && (this.stdSku[sku]===undefined || this.provisional.has(sku))) this.aprenderTiempo(sku);
-    this.autoPreparacion();
-    this.render();
+    const s=this.serie; if(!s || this._terminando) return;
+    this._terminando=true; // un doble toque en "Terminar" no debe cerrar el lote dos veces
+    try{
+      count=Math.max(1, Math.min(count, s.pendientes.length));
+      const finMs=Date.now();
+      const retra=await this.retrabajosDe(new Date(s.start).toISOString(), new Date(finMs).toISOString());
+      const total=Math.max(1,(finMs-s.start)/1000 - solaparSeg(s.start,finMs,retra));
+      const per=total/count;
+      const units=s.pendientes.slice(0,count);
+      units.forEach((uid,i)=>{
+        const iniTs=new Date(s.start + per*i*1000).toISOString();
+        const finTs=new Date(s.start + per*(i+1)*1000).toISOString();
+        if(!(i===0 && uid===s.marker)){
+          qInsert('fabricacion_eventos',{unidad_id:uid,ot:s.ot,sku:s.sku,puesto_id:this.user.id,tipo:'inicio',ts:iniTs});
+        }
+        qInsert('fabricacion_eventos',{unidad_id:uid,ot:s.ot,sku:s.sku,puesto_id:this.user.id,tipo:'fin',ts:finTs});
+        qUpdate('unidades',{id:uid,estado:'pendiente'},{estado:'stock',fabricada_at:finTs});
+        this.hechasHoy++; this.duracionesHoy.push(per);
+        this.ultimas.unshift({unidad_id:uid,sku:s.sku,seg:per});
+      });
+      this.ultimas=this.ultimas.slice(0,10);
+      const sku=s.sku;
+      toast(count+' uds terminadas · '+fmtDur(per)+' c/u','ok'); beep(true,true);
+      this.serie=null; this.serieSel=0; this.clearSerie();
+      this.markActivity();
+      if(sku && (this.stdSku[sku]===undefined || this.provisional.has(sku))) this.aprenderTiempo(sku);
+      this.autoPreparacion();
+      this.render();
+    }finally{ this._terminando=false; }
   },
   cancelarSerie(){
     if(!this.serie) return;
@@ -1064,16 +1148,16 @@ const Op = {
   toggleAlgunas(){ if(!this.serie) return; this.__algunas=!this.__algunas; if(this.__algunas){ const n=this.serie.pendientes.length; this.serieSel=Math.max(1,n-1); } this.render(); },
   async finalizar(code){
     const it=this.enCurso.get(code);
+    if(!it) return;
+    this.enCurso.delete(code); // ya, antes del await: un doble toque no debe registrar dos "fin"
     const ts=new Date().toISOString();
     const finMs=new Date(ts).getTime();
     const retra=await this.retrabajosDe(new Date(it.start).toISOString(), ts);
     const seg=Math.max(0,(finMs-it.start)/1000 - solaparSeg(it.start,finMs,retra));
     qInsert('fabricacion_eventos',{unidad_id:code,ot:it.ot,sku:it.sku,puesto_id:this.user.id,tipo:'fin',ts});
-    qUpdate('unidades',{id:code},{estado:'stock',fabricada_at:ts});
-    this.enCurso.delete(code);
+    qUpdate('unidades',{id:code,estado:'pendiente'},{estado:'stock',fabricada_at:ts});
     this.hechasHoy++; this.duracionesHoy.push(seg);
     this.ultimas.unshift({unidad_id:code,sku:it.sku,seg}); this.ultimas=this.ultimas.slice(0,10);
-    this.avgCache[it.sku]=null;
     toast('Terminada '+code+' ('+fmtDur(seg)+')','ok'); beep(true,true);
     this.markActivity();
     if(it.sku && (this.stdSku[it.sku]===undefined || this.provisional.has(it.sku))) this.aprenderTiempo(it.sku);
@@ -1103,23 +1187,6 @@ const Op = {
         this.render();
       }
     }catch(e){}
-  },
-
-  async avgSku(sku){
-    if(this.avgCache[sku]!=null) return this.avgCache[sku];
-    this.avgCache[sku]=0;
-    try{
-      const {data}=await sb.from('fabricacion_eventos').select('unidad_id,tipo,ts').eq('sku',sku).order('ts');
-      const byU={}; (data||[]).forEach(e=>{(byU[e.unidad_id]=byU[e.unidad_id]||[]).push(e);});
-      const ds=[];
-      for(const uid in byU){
-        const a=byU[uid]; const i=a.find(x=>x.tipo==='inicio'); const f=a.find(x=>x.tipo==='fin');
-        if(i&&f){ const d=(new Date(f.ts)-new Date(i.ts))/1000; if(d>0&&d<86400) ds.push(d); }
-      }
-      this.avgCache[sku]= ds.length? ds.reduce((a,b)=>a+b,0)/ds.length : 0;
-    }catch(e){}
-    this.render();
-    return this.avgCache[sku];
   },
 
   // ---------- retrabajo (paradas con motivo Retrabajo dentro de una pieza) ----------
@@ -1270,7 +1337,7 @@ const Op = {
         </div>
         <div style="display:flex;align-items:center;gap:10px">
           <div class="crono" id="c_${cssId(it.unidad_id)}">0:00</div>
-          <button class="btnfin" onclick="Op.finalizar('${it.unidad_id}')">${ICO.check}Terminar</button>
+          <button class="btnfin" data-uid="${esc(it.unidad_id)}" onclick="Op.finalizar(this.dataset.uid)">${ICO.check}Terminar</button>
         </div></div>`;
     }).join('');
 
@@ -1326,7 +1393,7 @@ const Enc = {
       (prods||[]).forEach(p=>this.prodMap[p.sku]=p.nombre);
       $('#nucList').innerHTML=(prods||[]).map(p=>`<option value="${esc(p.sku)}">${esc(p.nombre)}</option>`).join('');
     }catch(e){}
-    $('#parteFecha').value=new Date().toISOString().slice(0,10);
+    $('#parteFecha').value=ymdLocal(new Date());
     if(!this.ticking){ this.ticking=true; setInterval(()=>this.tick(),1000); }
     this.go('consumo');
   },
@@ -1350,13 +1417,15 @@ const Enc = {
     if(sec==='lotes') this.loadLotes();
     this.startAutoSec();
   },
-  // refresco automático de la pestaña abierta (stock/puestos/inventario/partes/lotes), cada 5s.
-  // "consumo" no se toca: ahí el encargado está escribiendo/escaneando activamente.
+  // refresco automático de la pestaña abierta (stock/puestos/inventario/partes), cada 5s.
+  // "consumo" y "lotes" no se tocan: ahí el encargado está escribiendo/escaneando activamente
+  // (antes el refresco de "lotes" borraba cada 5 s lo que se estaba tecleando).
   startAutoSec(){
     this.stopAutoSec();
-    const recargar={stock:()=>this.loadStock(), operarios:()=>this.loadOperarios(), inventario:()=>this.loadAjustes(), partes:()=>this.loadPartes(), lotes:()=>this.loadLotes()};
+    const recargar={stock:()=>this.loadStock(true), operarios:()=>this.loadOperarios(true), inventario:()=>this.loadAjustes(), partes:()=>this.loadPartes()};
     const fn=recargar[this.sec];
-    if(fn) this._secTimer=setInterval(fn,5000);
+    // el stock completo es una consulta más pesada: cada 15 s basta
+    if(fn) this._secTimer=setInterval(fn,this.sec==='stock'?15000:5000);
   },
   stopAutoSec(){ if(this._secTimer){ clearInterval(this._secTimer); this._secTimer=null; } },
 
@@ -1393,7 +1462,7 @@ const Enc = {
     $('#btnAceptar').textContent=arr.length? `Aceptar consumo (${arr.length})`:'Aceptar consumo';
     $('#cartList').innerHTML=arr.map(it=>`<div class="urow">
       <div style="min-width:0"><div class="uid">${esc(it.unidad_id)}</div><div class="usub">${esc(it.nombre)} · ${esc(it.ot)}</div></div>
-      <button class="btn-ghost sm" onclick="Enc.removeCart('${esc(it.unidad_id)}')">${ICO.x}</button></div>`).join('');
+      <button class="btn-ghost sm" data-uid="${esc(it.unidad_id)}" onclick="Enc.removeCart(this.dataset.uid)">${ICO.x}</button></div>`).join('');
   },
   async aceptarConsumo(){
     const arr=[...this.cart.values()];
@@ -1401,7 +1470,7 @@ const Enc = {
     if(!confirm(`¿Consumir ${arr.length} núcleos?`)) return;
     const now=new Date().toISOString();
     for(const it of arr){
-      qUpdate('unidades',{id:it.unidad_id},{estado:'consumida',consumida_at:now});
+      qUpdate('unidades',{id:it.unidad_id,estado:'stock'},{estado:'consumida',consumida_at:now});
       this.consumirReserva(it.sku);
     }
     toast(arr.length+' en cola de consumo','ok'); beep(true,true);
@@ -1410,10 +1479,10 @@ const Enc = {
   consumirReserva(sku){ qConsumirReserva(sku); },
 
   // ---------- STOCK ----------
-  async loadStock(){
-    $('#stockList').innerHTML='<div class="cargando">Cargando stock…</div>';
+  async loadStock(silent){
+    if(!silent || !this.stockData.length) $('#stockList').innerHTML='<div class="cargando">Cargando stock…</div>';
     try{
-      const {data}=await sb.from('unidades').select('sku,fabricada_at').eq('estado','stock');
+      const data=await selAll(()=>sb.from('unidades').select('sku,fabricada_at').eq('estado','stock'),['id']);
       const now=Date.now(), madms=this.mad*86400000, g={};
       (data||[]).forEach(u=>{
         const b=g[u.sku]||(g[u.sku]={sku:u.sku,disp:0,madur:0});
@@ -1422,7 +1491,7 @@ const Enc = {
       });
       this.stockData=Object.values(g).sort((a,b)=>a.sku.localeCompare(b.sku));
       this.renderStock();
-    }catch(e){ toast('Error stock: '+e.message,'err'); }
+    }catch(e){ if(!silent) toast('Error stock: '+e.message,'err'); }
   },
   renderStock(){
     const q=($('#stockSearch').value||'').toLowerCase().trim();
@@ -1440,13 +1509,13 @@ const Enc = {
   },
 
   // ---------- PUESTOS (ritmo y estado en vivo) ----------
-  async loadOperarios(){
-    $('#opsList').innerHTML='<div class="cargando">Cargando puestos…</div>';
+  async loadOperarios(silent){
+    if(!silent || !this._ops) $('#opsList').innerHTML='<div class="cargando">Cargando puestos…</div>';
     if(this.mad==null){ try{ const {data:cfg}=await sb.from('config').select('maduracion').eq('id',1).single(); if(cfg&&cfg.maduracion!=null) this.mad=cfg.maduracion; }catch(e){} }
     try{
       const hoy=new Date(); hoy.setHours(0,0,0,0); const hIso=hoy.toISOString();
       const {data:ops}=await sb.from('puestos_trabajo').select('id,nombre').eq('activo',true).order('nombre');
-      const {data:evs}=await sb.from('fabricacion_eventos').select('unidad_id,ot,sku,puesto_id,tipo,ts').gte('ts',hIso);
+      const evs=await selAll(()=>sb.from('fabricacion_eventos').select('unidad_id,ot,sku,puesto_id,tipo,ts').gte('ts',hIso),['ts','unidad_id','tipo']);
       const {data:pars}=await sb.from('paradas').select('puesto_id,motivo,inicio,fin').gte('inicio',hIso);
       const {data:turs}=await sb.from('turnos').select('puesto_id,inicio,fin').gte('inicio',hIso);
       const now=Date.now();
@@ -1479,7 +1548,7 @@ const Enc = {
         return {o,enCurso,hechas,media,uxh,paroAct,parosHoy,turnoDur,prodSeg,ocup,turnoAbierto};
       });
       this.renderOperarios();
-    }catch(e){ $('#opsList').innerHTML='<div class="vacio">Error: '+esc(e.message)+'</div>'; }
+    }catch(e){ if(!silent || !this._ops) $('#opsList').innerHTML='<div class="vacio">Error: '+esc(e.message)+'</div>'; }
   },
   renderOperarios(){
     if(!this._ops||!this._ops.length){ $('#opsList').innerHTML='<div class="vacio">Sin puestos.</div>'; return; }
@@ -1535,7 +1604,8 @@ const Enc = {
     const row={sku, tipo:this.ajTipo, cantidad:cant, madurar:this.ajTipo==='alta'?$('#ajMadur').checked:false,
                estado:'pendiente', solicitado_por:this.user.id, nota:$('#ajNota').value.trim()||null};
     try{
-      await sb.from('ajustes_inventario').insert(row);
+      const {error}=await sb.from('ajustes_inventario').insert(row);
+      if(error) throw error;
       toast('Enviado a oficina','ok');
       $('#ajNuc').value='';$('#ajCant').value='1';$('#ajNota').value='';$('#ajMadur').checked=false;
       this.loadAjustes();
@@ -1569,8 +1639,8 @@ const Enc = {
       $('#parteLanzVacio').classList.toggle('hidden', oarr.length>0);
       $('#parteLanz').innerHTML=oarr.map(o=>`<div class="urow"><div style="min-width:0"><div class="uid">${esc(o.ot)} · ${esc(o.sku)}</div><div class="usub">${esc(o.nombre||'')}</div></div><div style="font-family:var(--mono);font-weight:700;font-size:24px">${o.cantidad}</div></div>`).join('');
 
-      const {data:evs}=await sb.from('fabricacion_eventos').select('sku,tipo,ts').eq('tipo','fin').gte('ts',iIso).lte('ts',fIso);
-      const {data:cons}=await sb.from('unidades').select('sku,consumida_at').gte('consumida_at',iIso).lte('consumida_at',fIso);
+      const evs=await selAll(()=>sb.from('fabricacion_eventos').select('sku,tipo,ts').eq('tipo','fin').gte('ts',iIso).lte('ts',fIso),['ts','unidad_id']);
+      const cons=await selAll(()=>sb.from('unidades').select('sku,consumida_at').gte('consumida_at',iIso).lte('consumida_at',fIso),['id']);
       const g={};
       (evs||[]).forEach(e=>{(g[e.sku]=g[e.sku]||{sku:e.sku,fab:0,con:0}).fab++;});
       (cons||[]).forEach(c=>{(g[c.sku]=g[c.sku]||{sku:c.sku,fab:0,con:0}).con++;});
@@ -1646,6 +1716,10 @@ setInterval(tickClock,1000);
 Q.load();
 setInterval(()=>Q.flush(), 15000);
 Login.init();
+// permite abrir la app sin conexión (ver sw.js). Solo en HTTPS (GitHub Pages).
+if('serviceWorker' in navigator && location.protocol==='https:'){
+  window.addEventListener('load',()=>navigator.serviceWorker.register('sw.js').catch(()=>{}));
+}
 </script>
 </body>
 </html>
