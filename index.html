@@ -684,6 +684,7 @@ async function selAll(build, order){
   return out;
 }
 // fecha YYYY-MM-DD en hora LOCAL (toISOString usa UTC y de 00:00 a 02:00 da el día anterior)
+function inicioHoyIso(){ const d=new Date(); d.setHours(0,0,0,0); return d.toISOString(); }
 function ymdLocal(d){ return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); }
 
 // mantiene la pantalla encendida con la app abierta: si la tablet se bloquea, el JS se congela y
@@ -882,6 +883,24 @@ const Op = {
 
   markActivity(){ this.lastActivityTs=Date.now(); },
 
+  // tablet encendida toda la noche: al cambiar de día se recarga el estado desde la base de datos
+  // (el turno de ayer lo cierra el servidor y los contadores de "hoy" vuelven a cero)
+  async revisarCambioDia(){
+    const hoy=ymdLocal(new Date());
+    if(!this._dia){ this._dia=hoy; return; }
+    if(this._dia===hoy || this._cambiandoDia) return;
+    this._cambiandoDia=true;
+    try{
+      this._dia=hoy;
+      await Q.flush();
+      this.turno=null; this.turnoInicio=null; this.paradasSeg=0; this.paradasSesion=[];
+      this.paro=null; this.paroInicio=null; $('#paroBanner').classList.add('hidden');
+      await this.comprobarTurno(); await this.reconstruir(); await this.comprobarParadaActiva();
+      this.markActivity(); this.renderTurno(); this.render();
+      if(!this.turno) toast('Nuevo día: pulsa "Comenzar turno"','ok');
+    }finally{ this._cambiandoDia=false; }
+  },
+
   // iconos fijos de la interfaz
   pintarIconos(){
     const set=(sel,html)=>{ const el=$(sel); if(el) el.innerHTML=html; };
@@ -929,7 +948,9 @@ const Op = {
   // ---------- TURNO ----------
   async comprobarTurno(){
     try{
-      const {data}=await sb.from('turnos').select('id,inicio').eq('puesto_id',this.user.id).is('fin',null).order('inicio',{ascending:false}).limit(1);
+      // solo turnos de HOY: uno abierto de un día anterior lo cierra el cierre automático del
+      // servidor (cierre_turnos.sql) y no debe arrastrarse al turno de hoy
+      const {data}=await sb.from('turnos').select('id,inicio').eq('puesto_id',this.user.id).is('fin',null).gte('inicio',inicioHoyIso()).order('inicio',{ascending:false}).limit(1);
       if(data&&data.length){
         this.turno=data[0]; this.turnoInicio=new Date(data[0].inicio).getTime();
         const {data:pars}=await sb.from('paradas').select('inicio,fin').eq('puesto_id',this.user.id).gte('inicio',data[0].inicio);
@@ -1029,9 +1050,9 @@ const Op = {
         this.enCurso.set(p.unidad_id,{unidad_id:p.unidad_id,ot:p.ot,sku:p.sku,start:new Date(p.ts).getTime()});
       }});
       const tq=Q.items.filter(o=>o.table==='turnos'&&o.t==='insert'&&o.payload.puesto_id===this.user.id);
-      if(tq.length && !this.turno){ const p=tq[tq.length-1].payload; this.turno={inicio:p.inicio}; this.turnoInicio=new Date(p.inicio).getTime(); }
+      if(tq.length && !this.turno && tq[tq.length-1].payload.inicio>=inicioHoyIso()){ const p=tq[tq.length-1].payload; this.turno={inicio:p.inicio}; this.turnoInicio=new Date(p.inicio).getTime(); }
       const pq=Q.items.filter(o=>o.table==='paradas'&&o.t==='insert'&&o.payload.puesto_id===this.user.id);
-      if(pq.length && !this.paro){ const p=pq[pq.length-1].payload; this.paro={motivo:p.motivo,inicio:p.inicio}; this.paroInicio=new Date(p.inicio).getTime(); this.mostrarParo(); }
+      if(pq.length && !this.paro && pq[pq.length-1].payload.inicio>=inicioHoyIso()){ const p=pq[pq.length-1].payload; this.paro={motivo:p.motivo,inicio:p.inicio}; this.paroInicio=new Date(p.inicio).getTime(); this.mostrarParo(); }
     }catch(e){}
     if(this.serie && this.serie.marker){ this.enCurso.delete(this.serie.marker); }
   },
@@ -1039,7 +1060,7 @@ const Op = {
   async comprobarParadaActiva(){
     try{
       const {data}=await sb.from('paradas').select('id,motivo,inicio')
-        .eq('puesto_id',this.user.id).is('fin',null).order('inicio',{ascending:false}).limit(1);
+        .eq('puesto_id',this.user.id).is('fin',null).gte('inicio',inicioHoyIso()).order('inicio',{ascending:false}).limit(1);
       if(data&&data.length){ this.paro=data[0]; this.paroInicio=new Date(data[0].inicio).getTime(); this.mostrarParo(); }
     }catch(e){}
   },
@@ -1249,6 +1270,7 @@ const Op = {
   // ---------- render / tick ----------
   tick(){
     const now=Date.now();
+    this.revisarCambioDia();
     const intervalosParo=this.paradasSesion.map(p=>[p.inicio, p.fin==null?now:p.fin]);
     this.enCurso.forEach((it)=>{
       const seg=(now-it.start)/1000 - solaparSeg(it.start,now,intervalosParo);
