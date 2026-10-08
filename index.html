@@ -502,11 +502,18 @@ input,.uid,.det-row .v{-webkit-user-select:text;user-select:text}
         <div class="frow">
           <button id="tipoAlta" class="seg on" onclick="Enc.setTipo('alta')">Sobran (alta)</button>
           <button id="tipoBaja" class="seg" onclick="Enc.setTipo('baja')">Faltan (baja)</button>
+          <button id="tipoOT" class="seg" onclick="Enc.setTipo('ot')">OT: salieron menos</button>
+        </div>
+        <div id="ajOTWrap" style="display:none">
+          <input id="ajOT" class="buscar" placeholder="OT (ej. OT00022)…" list="otList" autocomplete="off">
+          <datalist id="otList"></datalist>
+          <div class="vacio" style="padding:0 0 12px;text-align:left">Pon cuántas etiquetas de esa OT han sobrado porque salieron menos núcleos. Oficina quitará esas unidades de la OT.</div>
         </div>
         <input id="ajNuc" class="buscar" placeholder="Núcleo (SKU)…" list="nucList" autocomplete="off">
         <datalist id="nucList"></datalist>
         <div class="frow">
           <input id="ajCant" type="number" min="1" value="1" class="buscar" style="max-width:130px;margin-bottom:0">
+          <span id="ajCantLbl" style="font-weight:700;color:var(--ink2)">uds</span>
           <label id="ajMadurWrap" class="chk"><input type="checkbox" id="ajMadur"> Que maduren</label>
         </div>
         <input id="ajNota" class="buscar" placeholder="Nota (opcional)…" autocomplete="off">
@@ -1617,8 +1624,33 @@ const Enc = {
   },
 
   // ---------- INVENTARIO ----------
-  setTipo(t){ this.ajTipo=t; $('#tipoAlta').classList.toggle('on',t==='alta'); $('#tipoBaja').classList.toggle('on',t==='baja'); $('#ajMadurWrap').style.display=t==='alta'?'':'none'; },
+  setTipo(t){
+    this.ajTipo=t;
+    $('#tipoAlta').classList.toggle('on',t==='alta'); $('#tipoBaja').classList.toggle('on',t==='baja'); $('#tipoOT').classList.toggle('on',t==='ot');
+    $('#ajMadurWrap').style.display=t==='alta'?'':'none';
+    $('#ajNuc').style.display=t==='ot'?'none':'';
+    $('#ajOTWrap').style.display=t==='ot'?'':'none';
+    $('#ajCantLbl').textContent=t==='ot'?'etiquetas que sobran':'uds';
+    if(t==='ot') this.loadOTs();
+  },
+  // OT abiertas para el desplegable de "OT: salieron menos"
+  async loadOTs(){
+    try{
+      const {data}=await sb.from('ordenes').select('ot,sku,nombre,cantidad').eq('estado','abierta').order('ot',{ascending:false}).limit(300);
+      this.otMap={}; (data||[]).forEach(o=>this.otMap[o.ot]=o);
+      $('#otList').innerHTML=(data||[]).map(o=>`<option value="${esc(o.ot)}">${esc(this.prodMap[o.sku]||o.sku)} · ${o.cantidad} uds</option>`).join('');
+    }catch(e){}
+  },
+  // desde "Partes": prepara la petición de esa OT (sobran etiquetas / salió una de más)
+  pedirDesdeOT(btn,tipo){
+    const ot=btn.dataset.ot, sku=btn.dataset.sku;
+    this.go('inventario'); this.setTipo(tipo);
+    if(tipo==='ot'){ $('#ajOT').value=ot; }
+    else{ $('#ajNuc').value=sku; $('#ajMadur').checked=true; $('#ajNota').value='Salió de más en '+ot; }
+    $('#ajCant').value='1'; $('#ajCant').focus();
+  },
   async enviarAjuste(){
+    if(this.ajTipo==='ot') return this.enviarAjusteOT();
     const sku=$('#ajNuc').value.trim().toUpperCase();
     const cant=parseInt($('#ajCant').value)||0;
     if(!sku || !this.prodMap[sku]){ toast('Elige un núcleo válido','err'); return; }
@@ -1633,6 +1665,25 @@ const Enc = {
       this.loadAjustes();
     }catch(e){ toast('Error: '+e.message,'err'); }
   },
+  // petición a oficina: en esta OT salieron menos núcleos y sobran etiquetas
+  async enviarAjusteOT(){
+    const ot=$('#ajOT').value.trim().toUpperCase();
+    const cant=parseInt($('#ajCant').value)||0;
+    if(!ot){ toast('Escribe la OT','err'); return; }
+    if(cant<1){ toast('Cantidad no válida','err'); return; }
+    try{
+      let o=this.otMap&&this.otMap[ot];
+      if(!o){ const {data}=await sb.from('ordenes').select('ot,sku,cantidad,estado').eq('ot',ot).maybeSingle(); o=data; }
+      if(!o){ toast('Esa OT no existe','err'); return; }
+      const row={sku:o.sku, tipo:'ot_menos', ot, cantidad:cant, madurar:false,
+                 estado:'pendiente', solicitado_por:this.user.id, nota:$('#ajNota').value.trim()||null};
+      const {error}=await sb.from('ajustes_inventario').insert(row);
+      if(error) throw new Error(/\bot\b|column/i.test(error.message)?'falta ejecutar peticiones_ot.sql en Supabase ('+error.message+')':error.message);
+      toast('Enviado a oficina','ok');
+      $('#ajOT').value='';$('#ajCant').value='1';$('#ajNota').value='';
+      this.loadAjustes();
+    }catch(e){ toast('Error: '+e.message,'err'); }
+  },
   async loadAjustes(){
     try{
       const {data}=await sb.from('ajustes_inventario').select('*').eq('solicitado_por',this.user.id).order('created_at',{ascending:false}).limit(30);
@@ -1641,6 +1692,10 @@ const Enc = {
       $('#ajList').innerHTML=arr.map(a=>{
         const nom=this.prodMap[a.sku]||a.sku;
         const est=a.estado==='aprobado'?'aprob':a.estado==='rechazado'?'rech':'pend';
+        if(a.tipo==='ot_menos') return `<div class="aj-card">
+          <div style="min-width:0"><div class="uid" style="display:flex;align-items:center;gap:8px"><span style="display:inline-flex;width:19px;height:19px;color:var(--terra)">${ICO.down}</span>${esc(a.ot||'OT')} · sobran ${a.cantidad} etiqueta${a.cantidad==1?'':'s'}</div>
+          <div class="usub" style="color:var(--muted);font-size:14px">${esc(nom)}${a.nota?' · '+esc(a.nota):''}</div></div>
+          <span class="aj-est ${est}">${esc(a.estado)}</span></div>`;
         const ico=a.tipo==='alta'?ICO.up:ICO.down;
         return `<div class="aj-card">
           <div style="min-width:0"><div class="uid" style="display:flex;align-items:center;gap:8px"><span style="display:inline-flex;width:19px;height:19px;color:${a.tipo==='alta'?'var(--green)':'var(--red)'}">${ico}</span>${a.tipo==='alta'?'Alta':'Baja'} · ${a.cantidad} uds</div>
@@ -1659,7 +1714,8 @@ const Enc = {
       const {data:ords}=await sb.from('ordenes').select('ot,sku,nombre,cantidad,lanzada_at').gte('lanzada_at',iIso).lte('lanzada_at',fIso).order('ot');
       const oarr=ords||[];
       $('#parteLanzVacio').classList.toggle('hidden', oarr.length>0);
-      $('#parteLanz').innerHTML=oarr.map(o=>`<div class="urow"><div style="min-width:0"><div class="uid">${esc(o.ot)} · ${esc(o.sku)}</div><div class="usub">${esc(o.nombre||'')}</div></div><div style="font-family:var(--mono);font-weight:700;font-size:24px">${o.cantidad}</div></div>`).join('');
+      $('#parteLanz').innerHTML=oarr.map(o=>`<div class="urow" style="flex-wrap:wrap"><div style="min-width:0;flex:1"><div class="uid">${esc(o.ot)} · ${esc(o.sku)}</div><div class="usub">${esc(o.nombre||'')}</div></div><div style="font-family:var(--mono);font-weight:700;font-size:24px">${o.cantidad}</div>
+        ${String(o.ot).startsWith('OTINV')?'':`<div style="display:flex;gap:8px;width:100%"><button class="btn-ghost sm" style="flex:1;font-size:15px" data-ot="${esc(o.ot)}" data-sku="${esc(o.sku)}" onclick="Enc.pedirDesdeOT(this,'ot')">Sobran etiquetas</button><button class="btn-ghost sm" style="flex:1;font-size:15px" data-ot="${esc(o.ot)}" data-sku="${esc(o.sku)}" onclick="Enc.pedirDesdeOT(this,'alta')">Salió de más</button></div>`}</div>`).join('');
 
       const evs=await selAll(()=>sb.from('fabricacion_eventos').select('sku,tipo,ts').eq('tipo','fin').gte('ts',iIso).lte('ts',fIso),['ts','unidad_id']);
       const cons=await selAll(()=>sb.from('unidades').select('sku,consumida_at').gte('consumida_at',iIso).lte('consumida_at',fIso),['id']);
