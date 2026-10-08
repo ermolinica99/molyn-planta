@@ -419,6 +419,7 @@ input,.uid,.det-row .v{-webkit-user-select:text;user-select:text}
         <button id="camBtn" class="btn-ghost" onclick="Op.toggleCam()"></button>
         <button class="btn-paro" onclick="Op.abrirParada()"></button>
       </div>
+      <button class="btn-ghost full" style="margin-top:10px" onclick="Op.abrirAviso()">Avisar a oficina · sobran etiquetas / salió de más</button>
     </div>
 
     <!-- KPIs del día -->
@@ -448,6 +449,25 @@ input,.uid,.det-row .v{-webkit-user-select:text;user-select:text}
       <h3>¿Por qué paras?</h3>
       <div class="motivos" id="motivosBox"></div>
       <button class="btn-ghost full" onclick="Op.cerrarModal()">Cancelar</button>
+    </div>
+  </div>
+
+  <div id="avisoModal" class="modal hidden">
+    <div class="modal-box">
+      <h3>Avisar a oficina</h3>
+      <div class="frow">
+        <button id="avMenos" class="seg on" onclick="Op.setAviso('ot')">Sobran etiquetas</button>
+        <button id="avMas" class="seg" onclick="Op.setAviso('alta')">Salió de más</button>
+      </div>
+      <input id="avOT" class="buscar" placeholder="OT (ej. OT00022)…" list="avOtList" autocomplete="off">
+      <datalist id="avOtList"></datalist>
+      <div class="frow">
+        <input id="avCant" type="number" min="1" value="1" class="buscar" style="max-width:130px;margin-bottom:0">
+        <span id="avCantLbl" style="font-weight:700;color:var(--ink2)">etiquetas que sobran</span>
+      </div>
+      <input id="avNota" class="buscar" placeholder="Nota (opcional)…" autocomplete="off">
+      <button class="btn-ink full" onclick="Op.enviarAviso(this)">Enviar a oficina</button>
+      <button class="btn-ghost full" style="margin-top:8px" onclick="Op.cerrarAviso()">Cancelar</button>
     </div>
   </div>
 
@@ -1223,6 +1243,46 @@ const Op = {
       const {data}=await sb.from('paradas').select('inicio,fin').eq('puesto_id',this.user.id).eq('motivo','Retrabajo').gte('inicio',desdeIso).lte('inicio',hastaIso);
       return (data||[]).filter(p=>p.fin).map(p=>[new Date(p.inicio).getTime(), new Date(p.fin).getTime()]);
     }catch(e){ return []; }
+  },
+
+  // ---------- avisos a oficina: sobran etiquetas de una OT / salió uno de más ----------
+  setAviso(t){
+    this.avTipo=t;
+    $('#avMenos').classList.toggle('on',t==='ot'); $('#avMas').classList.toggle('on',t==='alta');
+    $('#avCantLbl').textContent=t==='ot'?'etiquetas que sobran':'núcleos de más';
+  },
+  async abrirAviso(){
+    this.setAviso('ot');
+    // propone la OT con la que está trabajando el puesto
+    const cur=(this.serie&&this.serie.ot)||[...this.enCurso.values()].map(x=>x.ot).filter(Boolean).pop()||'';
+    $('#avOT').value=cur; $('#avCant').value='1'; $('#avNota').value='';
+    $('#avisoModal').classList.remove('hidden');
+    try{
+      const {data}=await sb.from('ordenes').select('ot,sku,cantidad').eq('estado','abierta').order('ot',{ascending:false}).limit(300);
+      this.otMap={}; (data||[]).forEach(o=>this.otMap[o.ot]=o);
+      $('#avOtList').innerHTML=(data||[]).map(o=>`<option value="${esc(o.ot)}">${esc(this.prodMap[o.sku]||o.sku)} · ${o.cantidad} uds</option>`).join('');
+    }catch(e){}
+  },
+  cerrarAviso(){ $('#avisoModal').classList.add('hidden'); },
+  async enviarAviso(btn){
+    const ot=$('#avOT').value.trim().toUpperCase(), cant=parseInt($('#avCant').value)||0;
+    if(!ot){ toast('Escribe la OT','err'); return; }
+    if(cant<1){ toast('Cantidad no válida','err'); return; }
+    if(!navigator.onLine){ toast('Sin conexión: envíalo cuando vuelva la red','err'); return; }
+    btn.disabled=true;
+    try{
+      let o=this.otMap&&this.otMap[ot];
+      if(!o){ const {data}=await sb.from('ordenes').select('ot,sku').eq('ot',ot).maybeSingle(); o=data; }
+      if(!o){ toast('Esa OT no existe','err'); return; }
+      const mas=this.avTipo==='alta', nota=$('#avNota').value.trim();
+      // "salió de más" es un alta de ese núcleo (que madure, recién cortado); oficina imprime su etiqueta
+      const row={sku:o.sku, tipo:mas?'alta':'ot_menos', ot, cantidad:cant, madurar:mas, estado:'pendiente',
+                 puesto_id:this.user.id, nota:[mas?'Salió de más en '+ot:'',nota].filter(Boolean).join(' · ')||null};
+      const {error}=await sb.from('ajustes_inventario').insert(row);
+      if(error) throw new Error(/puesto_id|\bot\b|column/i.test(error.message)?'falta ejecutar peticiones_puesto.sql en Supabase ('+error.message+')':error.message);
+      this.cerrarAviso(); toast('Enviado a oficina','ok');
+    }catch(e){ toast('Error: '+e.message,'err'); }
+    finally{ btn.disabled=false; }
   },
 
   // ---------- paradas ----------
