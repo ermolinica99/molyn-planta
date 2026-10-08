@@ -452,6 +452,13 @@ input,.uid,.det-row .v{-webkit-user-select:text;user-select:text}
     </div>
   </div>
 
+  <div id="abiertoModal" class="modal hidden">
+    <div class="modal-box">
+      <h3>Ojo: se quedó trabajo abierto</h3>
+      <div id="abBody"></div>
+    </div>
+  </div>
+
   <div id="avisoModal" class="modal hidden">
     <div class="modal-box">
       <h3>Avisar a oficina</h3>
@@ -550,6 +557,11 @@ input,.uid,.det-row .v{-webkit-user-select:text;user-select:text}
         <input id="parteFecha" type="date" class="buscar" style="max-width:210px;margin-bottom:0" onchange="Enc.loadPartes()">
         <button class="btn-ghost sm" onclick="Enc.loadPartes()">Ver</button>
       </div>
+      <div class="row-top" style="margin-top:10px">
+        <input id="parteBuscar" class="buscar" placeholder="Buscar OT de cualquier día (ej. OT00026)…" autocomplete="off" style="margin-bottom:0" onkeydown="if(event.key==='Enter')Enc.buscarOT()">
+        <button class="btn-ghost sm" onclick="Enc.buscarOT()">Buscar</button>
+      </div>
+      <div id="parteBusq" class="lista"></div>
       <h3 class="sec">OT lanzadas ese día</h3>
       <div id="parteLanz" class="lista"></div>
       <div id="parteLanzVacio" class="vacio">Sin OT ese día.</div>
@@ -906,6 +918,7 @@ const Op = {
     this.lastActivityTs=Date.now();
     if(!this.ticking){ this.ticking=true; setInterval(()=>this.tick(),1000); }
     this.renderTurno(); this.render(); Q.badge();
+    this.revisarAbiertos();
   },
 
   markActivity(){ this.lastActivityTs=Date.now(); },
@@ -925,6 +938,7 @@ const Op = {
       await this.comprobarTurno(); await this.reconstruir(); await this.comprobarParadaActiva();
       this.markActivity(); this.renderTurno(); this.render();
       if(!this.turno) toast('Nuevo día: pulsa "Comenzar turno"','ok');
+      this.revisarAbiertos();
     }finally{ this._cambiandoDia=false; }
   },
 
@@ -1057,7 +1071,7 @@ const Op = {
         const fins=arr.filter(e=>e.tipo==='fin');
         if(inis.length>fins.length){
           const li=inis[inis.length-1];
-          this.enCurso.set(uid,{unidad_id:uid,ot:li.ot,sku:li.sku,start:new Date(li.ts).getTime()});
+          this.enCurso.set(uid,{unidad_id:uid,ot:li.ot,sku:li.sku,start:new Date(li.ts).getTime(),ts:li.ts});
         }
         fins.forEach((f,idx)=>{
           if(new Date(f.ts)>=hoy){
@@ -1074,7 +1088,7 @@ const Op = {
       const inis=qev.filter(o=>o.payload.tipo==='inicio');
       const fins=new Set(qev.filter(o=>o.payload.tipo==='fin').map(o=>o.payload.unidad_id));
       inis.forEach(o=>{ const p=o.payload; if(!fins.has(p.unidad_id) && !this.enCurso.has(p.unidad_id)){
-        this.enCurso.set(p.unidad_id,{unidad_id:p.unidad_id,ot:p.ot,sku:p.sku,start:new Date(p.ts).getTime()});
+        this.enCurso.set(p.unidad_id,{unidad_id:p.unidad_id,ot:p.ot,sku:p.sku,start:new Date(p.ts).getTime(),ts:p.ts});
       }});
       const tq=Q.items.filter(o=>o.table==='turnos'&&o.t==='insert'&&o.payload.puesto_id===this.user.id);
       if(tq.length && !this.turno && tq[tq.length-1].payload.inicio>=inicioHoyIso()){ const p=tq[tq.length-1].payload; this.turno={inicio:p.inicio}; this.turnoInicio=new Date(p.inicio).getTime(); }
@@ -1244,6 +1258,126 @@ const Op = {
       return (data||[]).filter(p=>p.fin).map(p=>[new Date(p.inicio).getTime(), new Date(p.fin).getTime()]);
     }catch(e){ return []; }
   },
+
+  // ---------- trabajo que se quedó abierto de un día anterior ----------
+  // Al entrar (o al cambiar de día con la app abierta) se revisa si hay un lote o una unidad
+  // "en fabricación" que empezó otro día. Se pregunta qué hacer: registrar las terminadas con el
+  // tiempo estimado (no las horas que estuvo abierto), reiniciar la cuenta, o decidir luego.
+  revisarAbiertos(){
+    const h0=new Date(); h0.setHours(0,0,0,0);
+    const items=[];
+    if(this.serie && this.serie.start<h0.getTime()) items.push({tipo:'serie'});
+    for(const it of this.enCurso.values()) if(it.start<h0.getTime()) items.push({tipo:'unidad',it});
+    this._abiertos=items;
+    if(items.length) this.siguienteAbierto();
+  },
+  async siguienteAbierto(){
+    const x=(this._abiertos||[]).shift();
+    if(!x){ $('#abiertoModal').classList.add('hidden'); this.render(); return; }
+    if(x.tipo==='serie'){
+      const s=this.serie; if(!s) return this.siguienteAbierto();
+      // estado real: puede que la OT ya se haya fabricado o cerrado desde oficina
+      let pend=s.pendientes||[];
+      try{ const {data,error}=await sb.from('unidades').select('id').eq('ot',s.ot).eq('estado','pendiente').order('id'); if(!error) pend=(data||[]).map(u=>u.id); }catch(e){}
+      if(!pend.length){ this.descartarSerie(); toast(s.ot+' ya no tiene unidades pendientes: se quita de en curso','ok'); return this.siguienteAbierto(); }
+      if(pend.includes(s.marker)) pend=[s.marker,...pend.filter(i=>i!==s.marker)];
+      s.pendientes=pend; this.serieSel=pend.length; this.saveSerie();
+      this.pintarAbierto({serie:true,ot:s.ot,sku:s.sku,nombre:s.nombre||this.prodMap[s.sku]||s.sku,start:s.start,n:pend.length});
+    }else{
+      const it=x.it;
+      let estado='pendiente';
+      try{ const {data,error}=await sb.from('unidades').select('estado').eq('id',it.unidad_id).maybeSingle(); if(!error) estado=data?data.estado:'borrada'; }catch(e){}
+      if(estado!=='pendiente'){
+        this.quitarInicio(it);
+        toast(it.unidad_id+(estado==='stock'?' ya estaba fabricada':' ya no está pendiente')+': se quita de en curso','ok');
+        return this.siguienteAbierto();
+      }
+      this.pintarAbierto({serie:false,ot:it.ot,sku:it.sku,nombre:this.prodMap[it.sku]||it.sku,start:it.start,n:1,unidad:it});
+    }
+  },
+  pintarAbierto(d){
+    this._ab=d;
+    const fecha=new Date(d.start).toLocaleString('es-ES',{weekday:'long',day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'});
+    const std=this.stdSku[d.sku]||this.tiempoDefaultDe(d.sku);
+    $('#abBody').innerHTML=`
+      <p style="font-size:17px;line-height:1.45;margin:0 0 14px">${d.serie?'El lote de la OT':'La unidad'} <b>${esc(d.serie?d.ot:d.unidad.unidad_id)}</b> (${esc(d.nombre)}) se quedó abierto desde el <b>${esc(fecha)}</b>${d.serie?` con <b>${d.n}</b> uds pendientes`:''}. ¿Qué hacemos?</p>
+      ${d.serie?`<div class="frow"><span style="font-weight:800;font-size:17px">¿Cuántas se terminaron?</span>
+        <input id="abN" type="number" min="0" max="${d.n}" value="${d.n}" class="buscar" style="max-width:110px;margin-bottom:0;text-align:center"><span style="font-weight:700">de ${d.n}</span></div>`:''}
+      <button class="btn-ink full" onclick="Op.abiertoFabricar(this)">${d.serie?'Registrar las terminadas':'Se terminó: registrarla'}</button>
+      <div class="vacio" style="text-align:left;padding:8px 0 14px">Se apunta el tiempo estimado (${fmtDur(std)} por unidad), no las horas que estuvo abierto.${d.serie?' Las que no se terminaron siguen pendientes en la OT.':''}</div>
+      <button class="btn-ghost full" onclick="Op.abiertoReiniciar()">Reiniciar la cuenta: empezar de nuevo</button>
+      <button class="btn-ghost full" style="margin-top:8px" onclick="Op.abiertoLuego()">Decidir más tarde</button>`;
+    $('#abiertoModal').classList.remove('hidden');
+  },
+  // quita el "inicio" de una unidad que quedó colgado (para que deje de salir en fabricación)
+  quitarInicio(it){
+    const ts=it.ts||new Date(it.start).toISOString();
+    Q.dropInsert('fabricacion_eventos', p=>p.unidad_id===it.unidad_id && p.tipo==='inicio' && p.ts===ts);
+    qDelete('fabricacion_eventos',{unidad_id:it.unidad_id, tipo:'inicio', ts});
+    this.enCurso.delete(it.unidad_id);
+  },
+  // cierra el lote abierto sin registrar nada (quita su "inicio")
+  descartarSerie(){
+    const s=this.serie; if(!s) return;
+    Q.dropInsert('fabricacion_eventos', p=>p.unidad_id===s.marker && p.tipo==='inicio' && p.ts===s.markerTs);
+    qDelete('fabricacion_eventos',{unidad_id:s.marker, tipo:'inicio', ts:s.markerTs});
+    this.serie=null; this.serieSel=0; this.clearSerie();
+  },
+  async abiertoFabricar(btn){
+    const d=this._ab; if(!d || this._abBusy) return;
+    this._abBusy=true; if(btn) btn.disabled=true;
+    try{
+      const std=this.stdSku[d.sku]||this.tiempoDefaultDe(d.sku);
+      if(d.serie){
+        const s=this.serie; if(!s) return;
+        const n=Math.max(0,Math.min(d.n,parseInt($('#abN').value)||0));
+        if(n===0){ toast('Pon cuántas se terminaron, o reinicia la cuenta','err'); return; }
+        const units=s.pendientes.slice(0,n);
+        // cada unidad con el tiempo estimado, seguidas desde que se abrió el lote
+        units.forEach((uid,i)=>{
+          const iniTs=new Date(s.start+std*i*1000).toISOString(), finTs=new Date(s.start+std*(i+1)*1000).toISOString();
+          if(uid!==s.marker) qInsert('fabricacion_eventos',{unidad_id:uid,ot:s.ot,sku:s.sku,puesto_id:this.user.id,tipo:'inicio',ts:i===0?s.markerTs:iniTs});
+          qInsert('fabricacion_eventos',{unidad_id:uid,ot:s.ot,sku:s.sku,puesto_id:this.user.id,tipo:'fin',ts:finTs});
+          qUpdate('unidades',{id:uid,estado:'pendiente'},{estado:'stock',fabricada_at:finTs});
+        });
+        // si el marcador del lote no estaba entre las terminadas, su "inicio" quedaría colgado
+        if(!units.includes(s.marker)){
+          Q.dropInsert('fabricacion_eventos', p=>p.unidad_id===s.marker && p.tipo==='inicio' && p.ts===s.markerTs);
+          qDelete('fabricacion_eventos',{unidad_id:s.marker, tipo:'inicio', ts:s.markerTs});
+        }
+        this.serie=null; this.serieSel=0; this.clearSerie();
+        toast(n+' uds registradas en '+s.ot+(n<d.n?' · '+(d.n-n)+' siguen pendientes':''),'ok');
+      }else{
+        const it=d.unidad, finTs=new Date(it.start+std*1000).toISOString();
+        qInsert('fabricacion_eventos',{unidad_id:it.unidad_id,ot:it.ot,sku:it.sku,puesto_id:this.user.id,tipo:'fin',ts:finTs});
+        qUpdate('unidades',{id:it.unidad_id,estado:'pendiente'},{estado:'stock',fabricada_at:finTs});
+        this.enCurso.delete(it.unidad_id);
+        toast(it.unidad_id+' registrada','ok');
+      }
+      this.siguienteAbierto();
+    }finally{ this._abBusy=false; if(btn) btn.disabled=false; }
+  },
+  abiertoReiniciar(){
+    const d=this._ab; if(!d) return;
+    if(d.serie){
+      const s=this.serie; if(!s) return this.siguienteAbierto();
+      if(this.turno){
+        // el lote sigue abierto, pero la cuenta empieza ahora
+        const iso=new Date().toISOString();
+        qUpdate('fabricacion_eventos',{unidad_id:s.marker,tipo:'inicio',ts:s.markerTs},{ts:iso});
+        s.start=new Date(iso).getTime(); s.markerTs=iso; this.saveSerie();
+        toast('Cuenta reiniciada: el lote de '+s.ot+' empieza ahora','ok');
+      }else{
+        this.descartarSerie();
+        toast('Cuenta reiniciada. Comienza el turno y escanea una etiqueta de '+s.ot+' para empezar','ok');
+      }
+    }else{
+      this.quitarInicio(d.unidad);
+      toast('Cuenta reiniciada. Escanea '+d.unidad.unidad_id+' para empezarla de nuevo','ok');
+    }
+    this.siguienteAbierto();
+  },
+  abiertoLuego(){ this._abiertos=[]; $('#abiertoModal').classList.add('hidden'); this.render(); },
 
   // ---------- avisos a oficina: sobran etiquetas de una OT / salió uno de más ----------
   setAviso(t){
@@ -1766,6 +1900,23 @@ const Enc = {
   },
 
   // ---------- PARTES ----------
+  // una OT con sus botones para pedir ajustes a oficina
+  filaOT(o,conEstado){
+    const est=conEstado?` · <b>${esc(o.estado||'')}</b>${o.lanzada_at?' · '+new Date(o.lanzada_at).toLocaleDateString('es-ES'):''}`:'';
+    return `<div class="urow" style="flex-wrap:wrap"><div style="min-width:0;flex:1"><div class="uid">${esc(o.ot)} · ${esc(o.sku)}</div><div class="usub">${esc(o.nombre||'')}${est}</div></div><div style="font-family:var(--mono);font-weight:700;font-size:24px">${o.cantidad}</div>
+      ${String(o.ot).startsWith('OTINV')?'':`<div style="display:flex;gap:8px;width:100%"><button class="btn-ghost sm" style="flex:1;font-size:15px" data-ot="${esc(o.ot)}" data-sku="${esc(o.sku)}" onclick="Enc.pedirDesdeOT(this,'ot')">Sobran etiquetas</button><button class="btn-ghost sm" style="flex:1;font-size:15px" data-ot="${esc(o.ot)}" data-sku="${esc(o.sku)}" onclick="Enc.pedirDesdeOT(this,'alta')">Salió de más</button></div>`}</div>`;
+  },
+  // busca OT por número o núcleo, sin importar el día en que se lanzó
+  async buscarOT(){
+    const q=$('#parteBuscar').value.trim().toUpperCase();
+    if(!q){ $('#parteBusq').innerHTML=''; return; }
+    try{
+      const pat='%'+q.replace(/[%,()]/g,'')+'%';
+      const {data,error}=await sb.from('ordenes').select('ot,sku,nombre,cantidad,estado,lanzada_at').or(`ot.ilike.${pat},sku.ilike.${pat}`).order('ot',{ascending:false}).limit(20);
+      if(error) throw error;
+      $('#parteBusq').innerHTML=(data&&data.length)?data.map(o=>this.filaOT(o,true)).join(''):'<div class="vacio">No hay ninguna OT con "'+esc(q)+'".</div>';
+    }catch(e){ toast('Error buscando: '+e.message,'err'); }
+  },
   async loadPartes(){
     const f=$('#parteFecha').value; if(!f) return;
     const ini=new Date(f+'T00:00:00'); const fin=new Date(f+'T23:59:59.999');
@@ -1774,8 +1925,7 @@ const Enc = {
       const {data:ords}=await sb.from('ordenes').select('ot,sku,nombre,cantidad,lanzada_at').gte('lanzada_at',iIso).lte('lanzada_at',fIso).order('ot');
       const oarr=ords||[];
       $('#parteLanzVacio').classList.toggle('hidden', oarr.length>0);
-      $('#parteLanz').innerHTML=oarr.map(o=>`<div class="urow" style="flex-wrap:wrap"><div style="min-width:0;flex:1"><div class="uid">${esc(o.ot)} · ${esc(o.sku)}</div><div class="usub">${esc(o.nombre||'')}</div></div><div style="font-family:var(--mono);font-weight:700;font-size:24px">${o.cantidad}</div>
-        ${String(o.ot).startsWith('OTINV')?'':`<div style="display:flex;gap:8px;width:100%"><button class="btn-ghost sm" style="flex:1;font-size:15px" data-ot="${esc(o.ot)}" data-sku="${esc(o.sku)}" onclick="Enc.pedirDesdeOT(this,'ot')">Sobran etiquetas</button><button class="btn-ghost sm" style="flex:1;font-size:15px" data-ot="${esc(o.ot)}" data-sku="${esc(o.sku)}" onclick="Enc.pedirDesdeOT(this,'alta')">Salió de más</button></div>`}</div>`).join('');
+      $('#parteLanz').innerHTML=oarr.map(o=>this.filaOT(o)).join('');
 
       const evs=await selAll(()=>sb.from('fabricacion_eventos').select('sku,tipo,ts').eq('tipo','fin').gte('ts',iIso).lte('ts',fIso),['ts','unidad_id']);
       const cons=await selAll(()=>sb.from('unidades').select('sku,consumida_at').gte('consumida_at',iIso).lte('consumida_at',fIso),['id']);
