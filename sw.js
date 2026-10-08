@@ -7,11 +7,12 @@
 // ven al momento, igual que sin service worker.
 // Las llamadas a la base de datos (supabase.co) NO pasan por aquí: van directas a la red.
 
-const CACHE = 'molyn-planta-v1';
+const CACHE = 'molyn-planta-v2';
 const CORE = [
   './',
   './index.html',
   './manifest.json',
+  './estandares/etiquetas.html',
   './molyn_icon_180.png',
   './molyn_icon_192.png',
   './molyn_icon_512.png',

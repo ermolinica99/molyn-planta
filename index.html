@@ -62,6 +62,18 @@ header .who b{color:#fff;font-weight:700}
 header .who span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:40vw}
 .logout{background:rgba(255,255,255,.12);color:#fff;border-radius:var(--pill);padding:11px 16px;font-size:14px;font-weight:700}
 
+/* ---------- estándares de trabajo (ventana a pantalla completa) ---------- */
+.est{position:fixed;inset:0;z-index:300;background:var(--bg);display:flex;flex-direction:column}
+.est.hidden{display:none}
+.est-top{display:flex;align-items:center;gap:10px;background:var(--ink);color:#fff;padding:calc(11px + env(safe-area-inset-top)) 16px 11px}
+.est-top b{flex:1;font-size:17px;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.est-lista{padding:16px;display:flex;flex-direction:column;gap:12px;overflow:auto}
+.est-item{background:var(--surf);border:2px solid var(--border);border-radius:var(--r);padding:18px;text-align:left;display:flex;flex-direction:column;gap:6px;box-shadow:var(--sh)}
+.est-item .t{font-weight:800;font-size:19px;color:var(--ink)}
+.est-item .d{font-size:15px;color:var(--ink2);line-height:1.45}
+.est-item .v{font-weight:800;color:var(--terra);font-size:15px;margin-top:4px}
+.est iframe{flex:1;border:0;width:100%;background:#fff}
+
 /* ---------- barra de sincronización: legible de un vistazo ---------- */
 .syncbar{display:flex;align-items:center;gap:9px;padding:11px 16px;font-size:15px;font-weight:700;position:sticky;top:0;z-index:9}
 .syncbar #syncDot{font-size:13px;line-height:1}
@@ -370,7 +382,7 @@ input,.uid,.det-row .v{-webkit-user-select:text;user-select:text}
 <div id="app" class="hidden">
   <header>
     <div class="brand"><svg width="22" height="22" viewBox="0 0 512 512" style="margin-right:9px"><rect width="512" height="512" rx="120" fill="#B0552F"/><circle cx="256" cy="256" r="150" fill="none" stroke="#F4F2ED" stroke-width="12"/><polyline points="204,308 204,190 256,248 308,190 308,308" fill="none" stroke="#F4F2ED" stroke-width="40" stroke-linecap="round" stroke-linejoin="round"/></svg>MOLYN · PLANTA</div>
-    <div class="who"><span id="whoName">—</span><button class="logout" onclick="Login.logout()">Salir</button></div>
+    <div class="who"><span id="whoName">—</span><button class="logout" onclick="Est.abrir()">Estándares</button><button class="logout" onclick="Login.logout()">Salir</button></div>
   </header>
   <div id="clockBar" class="clockbar"><span id="clockTxt">—</span></div>
   <div id="syncBar" class="syncbar ok">
@@ -450,6 +462,16 @@ input,.uid,.det-row .v{-webkit-user-select:text;user-select:text}
       <div class="motivos" id="motivosBox"></div>
       <button class="btn-ghost full" onclick="Op.cerrarModal()">Cancelar</button>
     </div>
+  </div>
+
+  <div id="estModal" class="est hidden">
+    <div class="est-top">
+      <button id="estVolver" class="logout hidden" onclick="Est.volver()">‹ Lista</button>
+      <b id="estTit">Estándares de trabajo</b>
+      <button class="logout" onclick="Est.cerrar()">Cerrar</button>
+    </div>
+    <div id="estLista" class="est-lista"></div>
+    <iframe id="estFrame" class="hidden" title="Estándar de trabajo"></iframe>
   </div>
 
   <div id="abiertoModal" class="modal hidden">
@@ -694,6 +716,30 @@ const Q = {
     else { bar.className='syncbar ok'; txt.textContent='Conectado'; btn.classList.add('hidden'); }
   }
 };
+// ---------- ESTÁNDARES de trabajo: qué hacer cuando pasa un problema concreto ----------
+// Para añadir uno nuevo: crear su página en estandares/ y añadir una línea aquí (y en Oficina).
+const ESTANDARES=[
+  {archivo:'estandares/etiquetas.html', titulo:'Las etiquetas no cuadran con el corte',
+   problema:'Salen menos núcleos que etiquetas (19 lanzados, salen 18), sale uno de más, o se pierde o se rompe una etiqueta.'},
+];
+const Est={
+  abrir(){ this.volver(); $('#estModal').classList.remove('hidden'); },
+  cerrar(){ $('#estModal').classList.add('hidden'); $('#estFrame').src='about:blank'; },
+  volver(){
+    $('#estTit').textContent='Estándares de trabajo';
+    $('#estVolver').classList.add('hidden'); $('#estFrame').classList.add('hidden'); $('#estFrame').src='about:blank';
+    $('#estLista').classList.remove('hidden');
+    $('#estLista').innerHTML=ESTANDARES.map((e,i)=>`<button class="est-item" onclick="Est.ver(${i})">
+      <span class="t">${esc(e.titulo)}</span><span class="d">${esc(e.problema)}</span><span class="v">Ver qué hacer ›</span></button>`).join('');
+  },
+  ver(i){
+    const e=ESTANDARES[i]; if(!e) return;
+    $('#estTit').textContent=e.titulo;
+    $('#estLista').classList.add('hidden'); $('#estVolver').classList.remove('hidden');
+    const f=$('#estFrame'); f.src=e.archivo; f.classList.remove('hidden');
+  }
+};
+
 function qInsert(table,payload){ Q.enqueue({t:'insert',table,payload}); }
 function qUpdate(table,match,payload){ Q.enqueue({t:'update',table,match,payload}); }
 function qDelete(table,match){ Q.enqueue({t:'delete',table,match}); }
