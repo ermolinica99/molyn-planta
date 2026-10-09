@@ -769,6 +769,9 @@ const Est={
 
 // tipos de producto por su código: tapas (<modelo>_TAPA) y platabandas (<modelo>_PTB) no maduran
 function tipoDe(sku){ sku=String(sku||''); return sku.endsWith('_TAPA')?'tapa':(sku.endsWith('_PTB')?'platabanda':'nucleo'); }
+// fila de lotes_programa con el tiempo teórico de un sku: la de su fase (tapa, platabanda, pegado,
+// cosido, embalaje → <modelo>_TAPA/_PTB/_PEG/_COS/_EMB) o, si es núcleo, la de su programa N001…
+function claveTiempoDe(sku){ const m=String(sku||'').match(/_(TAPA|PTB|PEG|COS|EMB)$/); return m?m[1]:progDe(sku); }
 
 function qInsert(table,payload){ Q.enqueue({t:'insert',table,payload}); }
 function qUpdate(table,match,payload){ Q.enqueue({t:'update',table,match,payload}); }
@@ -1030,7 +1033,7 @@ const Op = {
   },
 
   // tiempo teórico por defecto de un núcleo: el de su programa (N001-N012) si está configurado, si no 4:30
-  tiempoDefaultDe(sku){ return (this.tiempoTeoricoPrograma&&this.tiempoTeoricoPrograma[progDe(sku)])||270; },
+  tiempoDefaultDe(sku){ return (this.tiempoTeoricoPrograma&&this.tiempoTeoricoPrograma[claveTiempoDe(sku)])||270; },
 
   async clasificarNucleos(){
     this.tipoSku={};
