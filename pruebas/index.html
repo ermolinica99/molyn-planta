@@ -1,0 +1,2086 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>MOLYN · Planta</title>
+<script>
+// ============================================================
+//  ENTORNO: esta misma página sirve para la app real y para el entorno de pruebas.
+//  Si está en una carpeta /pruebas/ usa la base de datos de pruebas, guarda en el navegador
+//  con el prefijo "pruebas:" (la app real y la de pruebas comparten dirección y si no se
+//  mezclarían la sesión, la cola sin enviar y la caché) y muestra una franja roja.
+// ============================================================
+const ES_PRUEBAS=/\/pruebas\//.test(location.pathname);
+if(ES_PRUEBAS){
+  ['getItem','setItem','removeItem'].forEach(m=>{ const o=Storage.prototype[m]; Storage.prototype[m]=function(k,...a){ return o.call(this,'pruebas:'+k,...a); }; });
+  document.title='[PRUEBAS] '+document.title;
+  document.addEventListener('DOMContentLoaded',()=>{
+    const b=document.createElement('div');
+    b.textContent='ENTORNO DE PRUEBAS · los datos no son reales';
+    b.style.cssText='position:fixed;left:0;right:0;bottom:0;z-index:99999;background:#C62828;color:#fff;text-align:center;font:700 13px/1 Arial,sans-serif;padding:6px;letter-spacing:.06em;pointer-events:none';
+    document.body.appendChild(b);
+  });
+}
+</script>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 512'%3E%3Crect width='512' height='512' rx='120' fill='%23B0552F'/%3E%3Ccircle cx='256' cy='256' r='150' fill='none' stroke='%23F4F2ED' stroke-width='10'/%3E%3Cpolyline points='204,308 204,190 256,248 308,190 308,308' fill='none' stroke='%23F4F2ED' stroke-width='36' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+<link rel="apple-touch-icon" href="molyn_icon_180.png">
+<meta name="theme-color" content="#191814">
+<link rel="manifest" href="manifest.json">
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
+<style>
+/* ============================================================
+   MOLYN · PLANTA — hoja de estilos v4 "MANOS" (pulida)
+   Prioridad absoluta: usabilidad en planta.
+   · Texto grande y de alto contraste (se lee de pie, a un brazo)
+   · Objetivos táctiles enormes (56–76 px) y bien separados
+   · Un solo botón principal por pantalla, siempre el más grande
+   · El color solo significa: verde = seguir, rojo = parar, terracota = en curso
+   · Sin adornos: nada de sombras duras, mayúsculas apretadas ni tipografía fina
+
+   Sustituye TODO el contenido de tu <style> por este archivo.
+   En el <head>:
+   <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
+
+   Cero cambios en el JS: mismas clases, mismos ids.
+   ============================================================ */
+
+:root{
+  --ink:#191814; --ink2:#3A3730; --bg:#F4F2ED; --surf:#FFFFFF; --surf2:#E9E6DF;
+  --terra:#B0552F; --terra-d:#8F4222; --terra-soft:#F7E8E0;
+  --green:#2E7D45; --green-soft:#DFEEE3;
+  --red:#B23A22; --red-soft:#F8E2DC;
+  --blue:#3C6375; --blue-soft:#E1EAEF;
+  --amber:#8A5E12; --amber-soft:#F8EBD2;
+  --muted:#6E6A62; --faint:#A6A199; --border:#DBD7CE;
+  --r-sm:12px; --r:16px; --r-lg:20px; --pill:999px;
+  --tap:60px;
+  --sh:0 1px 2px rgba(25,24,20,.05),0 6px 18px rgba(25,24,20,.06);
+  --ease:cubic-bezier(.22,1,.36,1);
+  --mono:'JetBrains Mono',ui-monospace,SFMono-Regular,Menlo,monospace;
+  --sans:'Archivo','Segoe UI',system-ui,Arial,sans-serif;
+}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent;font-family:var(--sans);touch-action:manipulation}
+html,body{margin:0;height:100%}
+body{background:var(--bg);color:var(--ink);overflow-x:hidden;-webkit-font-smoothing:antialiased;font-size:16px;line-height:1.4;touch-action:manipulation}
+.hidden{display:none!important}
+button{font-family:inherit;cursor:pointer;border:none;transition:transform .1s var(--ease),background .16s,color .16s,border-color .16s}
+button:active{transform:scale(.985)}
+button:focus-visible,input:focus-visible{outline:3px solid var(--terra);outline-offset:2px}
+input{font-family:inherit;font-size:17px}
+::placeholder{color:var(--faint)}
+
+/* ---------- cabecera: pequeña, no roba espacio ---------- */
+header{
+  background:var(--ink);color:#fff;padding:calc(11px + env(safe-area-inset-top)) 16px 11px;
+  display:flex;align-items:center;justify-content:space-between;gap:12px;position:sticky;top:0;z-index:10
+}
+header .brand{font-weight:700;letter-spacing:.04em;font-size:14px;display:flex;align-items:center}
+header .who{font-size:14px;color:#C9C4BA;display:flex;align-items:center;gap:10px}
+header .who b{color:#fff;font-weight:700}
+header .who span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:40vw}
+.logout{background:rgba(255,255,255,.12);color:#fff;border-radius:var(--pill);padding:11px 16px;font-size:14px;font-weight:700}
+
+/* ---------- estándares de trabajo (ventana a pantalla completa) ---------- */
+.est{position:fixed;inset:0;z-index:300;background:var(--bg);display:flex;flex-direction:column}
+.est.hidden{display:none}
+.est-top{display:flex;align-items:center;gap:10px;background:var(--ink);color:#fff;padding:calc(11px + env(safe-area-inset-top)) 16px 11px}
+.est-top b{flex:1;font-size:17px;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.est-lista{padding:16px;display:flex;flex-direction:column;gap:12px;overflow:auto}
+.est-item{background:var(--surf);border:2px solid var(--border);border-radius:var(--r);padding:18px;text-align:left;display:flex;flex-direction:column;gap:6px;box-shadow:var(--sh)}
+.est-item .t{font-weight:800;font-size:19px;color:var(--ink)}
+.est-item .d{font-size:15px;color:var(--ink2);line-height:1.45}
+.est-item .v{font-weight:800;color:var(--terra);font-size:15px;margin-top:4px}
+.est iframe{flex:1;border:0;width:100%;background:#fff}
+
+/* ---------- barra de sincronización: legible de un vistazo ---------- */
+.syncbar{display:flex;align-items:center;gap:9px;padding:11px 16px;font-size:15px;font-weight:700;position:sticky;top:0;z-index:9}
+.syncbar #syncDot{font-size:13px;line-height:1}
+.syncbar.ok{background:var(--green-soft);color:#1F5A31}
+.syncbar.off{background:var(--amber-soft);color:var(--amber)}
+.syncbar.pend{background:var(--terra-soft);color:var(--terra-d)}
+.syncbar.err{background:var(--red-soft);color:var(--red)}
+.syncbar button{margin-left:auto;background:var(--ink);color:#fff;border-radius:var(--pill);padding:10px 16px;font-size:14px;font-weight:700}
+
+/* ---------- reloj: fecha y hora siempre visibles arriba ---------- */
+.clockbar{
+  background:var(--surf2);color:var(--ink2);padding:9px 16px;text-align:center;
+  font-family:var(--mono);font-size:14px;font-weight:700;letter-spacing:.02em
+}
+
+/* ---------- login: tarjetas grandes, nombre enorme ---------- */
+#login{min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:28px 18px 40px;gap:26px}
+.logo h1{font-size:34px;font-weight:800;letter-spacing:.1em;margin:0;text-align:center}
+.logo p{color:var(--muted);letter-spacing:.2em;margin:6px 0 0;font-size:12px;font-weight:700;text-align:center}
+.users{display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:12px;width:100%;max-width:700px}
+.ucard{
+  background:var(--surf);border:2px solid var(--border);border-radius:var(--r);padding:22px 16px;text-align:center;
+  cursor:pointer;box-shadow:var(--sh);min-height:150px;display:flex;flex-direction:column;justify-content:center
+}
+.ucard:active{transform:scale(.97);background:var(--surf2)}
+.ucard.sel{border-color:var(--terra);background:var(--terra-soft)}
+.ucard .av{width:58px;height:58px;border-radius:var(--r-sm);margin:0 auto 12px;display:flex;align-items:center;justify-content:center;font-size:26px;font-weight:800}
+.ucard .nm{font-weight:800;font-size:19px;line-height:1.15}
+.ucard .rl{font-size:13px;color:var(--muted);margin-top:5px;font-weight:600}
+
+/* PIN: teclas de 76 px */
+#pinpad{width:100%;max-width:340px;display:flex;flex-direction:column;align-items:center;gap:20px}
+.pin-name{font-weight:800;font-size:22px}
+.pin-dots{display:flex;gap:16px}
+.pin-dots i{width:18px;height:18px;border-radius:50%;background:transparent;border:2px solid var(--faint);display:block;transition:.14s var(--ease)}
+.pin-dots i.on{background:var(--terra);border-color:var(--terra);transform:scale(1.1)}
+.pin-err{color:var(--red);font-weight:700;min-height:22px;font-size:16px}
+.keys{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;width:100%}
+.keys button{
+  background:var(--surf);border:2px solid var(--border);border-radius:var(--r);
+  font-family:var(--mono);font-size:30px;font-weight:700;min-height:76px;color:var(--ink);box-shadow:var(--sh)
+}
+.keys button:active{background:var(--terra-soft);border-color:var(--terra)}
+.back{background:none;color:var(--ink2);font-weight:700;font-size:16px;padding:14px 18px}
+
+/* ---------- estructura ---------- */
+main{padding:14px 16px calc(40px + env(safe-area-inset-bottom));max-width:900px;margin:0 auto}
+.placeholder{background:var(--surf);border:1px solid var(--border);border-radius:var(--r);padding:40px 24px;text-align:center;color:var(--muted);margin-top:24px}
+.placeholder h2{color:var(--ink);margin:0 0 8px}
+.sec{font-size:17px;font-weight:800;color:var(--ink);margin:26px 0 10px;display:flex;align-items:center;gap:9px}
+.pill-count{background:var(--terra);color:#fff;border-radius:var(--pill);font-size:14px;padding:3px 11px;font-weight:800;font-family:var(--mono)}
+.lista{display:flex;flex-direction:column;gap:10px}
+.vacio{color:var(--muted);font-size:15px;padding:16px 2px;line-height:1.5}
+.toast{
+  position:fixed;bottom:calc(20px + env(safe-area-inset-bottom));left:50%;transform:translateX(-50%) translateY(8px);
+  background:var(--ink);color:#fff;padding:18px 22px;border-radius:var(--r);font-weight:700;font-size:17px;
+  opacity:0;transition:.18s var(--ease);z-index:100;pointer-events:none;max-width:92%;box-shadow:0 12px 30px rgba(25,24,20,.28)
+}
+.toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+.toast.err{background:var(--red)}
+.toast.ok{background:var(--green)}
+
+/* ---------- turno: el estado más importante, arriba y grande ---------- */
+.turno-bar{margin-bottom:12px}
+.btn-turno{width:100%;background:var(--green);color:#fff;border-radius:var(--r);padding:24px;font-size:21px;font-weight:800;min-height:76px;box-shadow:var(--sh)}
+.btn-turno:active{background:#256637}
+.turno-on{background:var(--ink);color:#fff;border-radius:var(--r);padding:16px 18px;display:flex;align-items:center;justify-content:space-between;gap:14px}
+.turno-lbl{font-size:13px;letter-spacing:.06em;color:#B7B1A6;font-weight:700}
+.turno-time{font-family:var(--mono);font-size:40px;font-weight:700;line-height:1;font-variant-numeric:tabular-nums;letter-spacing:-.03em;margin-top:5px}
+.turno-sub{font-size:14px;color:#C9C4BA;margin-top:6px}
+.btn-turno-fin{background:rgba(255,255,255,.14);color:#fff;border-radius:var(--r-sm);padding:16px;font-weight:700;font-size:15px;min-height:var(--tap);white-space:nowrap}
+.btn-turno-fin:active{background:rgba(255,255,255,.26)}
+
+/* ---------- parada: imposible de ignorar ---------- */
+.paro-banner{
+  background:var(--red);color:#fff;padding:16px 18px;border-radius:var(--r);
+  display:flex;align-items:center;justify-content:space-between;gap:14px;font-size:19px;font-weight:700;margin-bottom:12px
+}
+.paro-banner span{font-family:var(--mono);font-variant-numeric:tabular-nums}
+.paro-banner button{background:#fff;color:var(--red);border-radius:var(--r-sm);padding:16px 20px;font-weight:800;font-size:17px;min-height:var(--tap)}
+
+/* ---------- escaneo ---------- */
+.scan-card{background:var(--surf);border:1px solid var(--border);border-radius:var(--r);padding:14px;box-shadow:var(--sh);transition:opacity .2s}
+#reader{position:relative;width:100%;max-width:420px;margin:0 auto 12px;border-radius:var(--r-sm);overflow:hidden;background:#100F0D}
+#reader:empty{display:none}
+#reader:not(:empty){height:320px}
+#reader>div{width:100%!important;height:100%!important;border:none!important}
+#reader video{width:100%!important;height:100%!important;object-fit:cover!important;display:block!important}
+#reader img[alt="Info icon"],#reader button{display:none!important}
+.scan-row{display:flex;gap:10px}
+.scan-row input{
+  flex:1;background:var(--bg);border:2px solid var(--border);border-radius:var(--r-sm);padding:0 14px;min-height:var(--tap);
+  font-size:19px;font-family:var(--mono);font-weight:700;min-width:0
+}
+.scan-row input:focus{outline:none;border-color:var(--terra);background:var(--surf)}
+.scan-tools{display:flex;gap:10px;margin-top:10px}
+.scan-tools button{flex:1;padding:16px 10px;border-radius:var(--r-sm);font-size:16px;font-weight:700;min-height:var(--tap)}
+.btn-terra{background:var(--terra);color:#fff;border-radius:var(--r-sm);padding:0 22px;font-weight:800;font-size:17px;min-height:var(--tap)}
+.btn-terra:active{background:var(--terra-d)}
+.btn-ghost{background:var(--surf2);color:var(--ink)}
+.btn-ghost:active{background:#DCD8D0}
+.btn-paro{background:var(--red-soft);color:var(--red);font-weight:800}
+.btn-paro:active{background:#F2D2CA}
+.full{width:100%;margin-top:12px;padding:18px;border-radius:var(--r-sm);font-weight:800;font-size:18px;min-height:64px}
+
+/* ---------- KPIs del día ---------- */
+.kpis3{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin:14px 0 4px}
+.kbox{background:var(--surf);border:1px solid var(--border);border-radius:var(--r-sm);padding:14px 8px;text-align:center;box-shadow:var(--sh)}
+.kbox .kn{font-family:var(--mono);font-size:32px;font-weight:700;font-variant-numeric:tabular-nums;line-height:1;letter-spacing:-.03em}
+.kbox:first-child .kn{color:var(--terra)}
+.kbox .kl{font-size:12px;color:var(--muted);margin-top:7px;font-weight:700;letter-spacing:.02em}
+
+/* ---------- serie / lote: acción principal enorme ---------- */
+.serie{background:var(--surf);border:2px solid var(--terra);border-radius:var(--r);padding:16px;margin-bottom:12px;box-shadow:var(--sh)}
+.serie .stag{display:inline-block;background:var(--terra);color:#fff;font-size:13px;font-weight:800;letter-spacing:.06em;padding:6px 13px;border-radius:var(--pill)}
+.serie .snom{font-weight:800;font-size:23px;line-height:1.15;margin:12px 0 4px}
+.serie .ssub{color:var(--muted);font-size:15px;line-height:1.5}
+.serie .ssub b{font-family:var(--mono);color:var(--ink);font-size:19px;font-variant-numeric:tabular-nums}
+.serie .scrono{font-family:var(--mono);font-size:40px;font-weight:700;font-variant-numeric:tabular-nums;margin:8px 0 2px;letter-spacing:-.03em}
+.serie .sbtns{display:flex;flex-direction:column;gap:10px;margin-top:16px}
+.serie .sbtns button{width:100%;min-width:0;border-radius:var(--r-sm);padding:20px;font-weight:800;font-size:19px;min-height:70px}
+.serie .btodas{background:var(--green);color:#fff}
+.serie .btodas:active{background:#256637}
+.serie .balgunas{background:var(--surf);color:var(--ink);border:2px solid var(--border)!important;font-size:17px;min-height:var(--tap);padding:16px}
+.serie .balgunas:active{background:var(--surf2)}
+.serie .stepper{display:flex;align-items:center;gap:14px;margin-top:16px;justify-content:center}
+.serie .stepper button{width:72px;height:72px;border-radius:var(--r-sm);border:2px solid var(--border);background:var(--surf);font-size:32px;font-weight:800;color:var(--ink)}
+.serie .stepper button:active{background:var(--surf2);border-color:var(--terra)}
+.serie .stepper .num{font-family:var(--mono);font-size:40px;font-weight:700;min-width:78px;text-align:center;font-variant-numeric:tabular-nums}
+.serie .sconfirm{width:100%;margin-top:12px;border-radius:var(--r-sm);padding:20px;font-weight:800;font-size:19px;background:var(--green);color:#fff;min-height:70px}
+.serie .sconfirm:active{background:#256637}
+.serie a{color:var(--muted);font-size:15px;text-decoration:underline;text-underline-offset:4px;display:inline-block;padding:10px}
+
+/* ---------- filas de unidades ---------- */
+.urow{background:var(--surf);border:1px solid var(--border);border-radius:var(--r-sm);padding:14px 15px;display:flex;align-items:center;justify-content:space-between;gap:12px}
+.urow.curso{border-left:6px solid var(--terra)}
+.urow .uid{font-family:var(--mono);font-weight:700;font-size:17px;word-break:break-all}
+.urow .usub{font-size:14px;color:var(--muted);margin-top:4px;line-height:1.4}
+.urow .ref{font-weight:700;color:var(--ink2);font-family:var(--mono)}
+.urow .crono{font-family:var(--mono);font-size:28px;font-weight:700;font-variant-numeric:tabular-nums;color:var(--terra);letter-spacing:-.03em}
+.urow.done{border-left:6px solid var(--green)}
+.urow.done .crono{color:var(--green);font-size:19px}
+.urow .avg{font-size:13px;color:var(--muted);font-family:var(--mono)}
+.urow.curso.over{border-left-color:var(--red);background:#FCEFEB}
+.btnfin{border-radius:var(--r-sm);padding:16px 18px;font-weight:800;font-size:17px;background:var(--green);color:#fff;white-space:nowrap;min-height:var(--tap)}
+.btnfin:active{background:#256637}
+.prog{height:8px;background:var(--surf2);border-radius:var(--pill);margin-top:10px;overflow:hidden}
+.prog i{display:block;height:100%;width:0;background:var(--green);border-radius:var(--pill);transition:width .9s linear,background .3s}
+
+/* ---------- hojas / modales: botonera de motivos gigante ---------- */
+.modal{position:fixed;inset:0;background:rgba(25,24,20,.55);display:flex;align-items:flex-end;justify-content:center;z-index:200}
+.modal-box{
+  background:var(--surf);border-radius:var(--r-lg) var(--r-lg) 0 0;padding:14px 18px calc(24px + env(safe-area-inset-bottom));
+  width:100%;max-width:560px;box-shadow:0 -10px 40px rgba(25,24,20,.22)
+}
+.modal-box::before{content:"";display:block;width:48px;height:5px;border-radius:var(--pill);background:var(--surf2);margin:0 auto 16px}
+.modal-box h3{margin:0 0 14px;font-size:20px;font-weight:800}
+.motivos{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.motivos button{background:var(--surf);border:2px solid var(--border);border-radius:var(--r-sm);padding:22px 14px;font-size:18px;font-weight:700;text-align:left;min-height:80px}
+.motivos button:active{background:var(--terra-soft);border-color:var(--terra)}
+.modal-ov{position:fixed;inset:0;background:rgba(25,24,20,.5);display:none;align-items:center;justify-content:center;z-index:200;padding:18px}
+.modal-ov.on{display:flex}
+.modal-bx{background:var(--surf);border-radius:var(--r);max-width:470px;width:100%;padding:24px;box-shadow:0 20px 50px rgba(0,0,0,.28);position:relative}
+.modal-bx .mclose{position:absolute;top:12px;right:12px;background:var(--surf2);color:var(--ink);font-size:17px;width:44px;height:44px;border-radius:var(--pill);font-weight:700}
+.modal-bx h3{font-size:22px;font-weight:800}
+.det-row{display:flex;justify-content:space-between;gap:12px;padding:15px 0;border-bottom:1px solid var(--border)}
+.det-row:last-of-type{border-bottom:none}
+.det-row .k{color:var(--muted);font-size:16px}
+.det-row .v{font-weight:800;text-align:right;font-size:17px;text-transform:capitalize}
+
+/* ---------- encargado ---------- */
+.subnav{display:flex;gap:8px;overflow-x:auto;padding:2px 0 12px;-webkit-overflow-scrolling:touch;scrollbar-width:none}
+.subnav::-webkit-scrollbar{display:none}
+.subnav button{background:var(--surf);border:2px solid var(--border);border-radius:var(--pill);padding:13px 18px;font-weight:700;font-size:16px;white-space:nowrap;color:var(--ink2);min-height:52px}
+.subnav button.on{background:var(--ink);color:#fff;border-color:var(--ink)}
+.enc-sec{padding-top:2px}
+#readerC{width:100%;max-width:420px;margin:0 auto 12px;border-radius:var(--r-sm);overflow:hidden}
+#readerC:empty{display:none}
+#readerC:not(:empty){min-height:270px;background:#100F0D}
+#readerC video{width:100%!important;height:auto!important;display:block;object-fit:cover}
+.buscar{width:100%;background:var(--surf);border:2px solid var(--border);border-radius:var(--r-sm);padding:0 14px;min-height:var(--tap);font-size:18px;margin-bottom:10px}
+.buscar:focus{outline:none;border-color:var(--terra)}
+.btn-ink{background:var(--ink);color:#fff;border-radius:var(--r-sm);padding:19px;font-weight:800;font-size:18px;min-height:64px}
+.btn-ink:disabled{opacity:.4;pointer-events:none}
+.row-top{display:flex;align-items:center;justify-content:space-between;gap:10px}
+.row-top .sec{margin:18px 0 10px}
+.btn-ghost.sm{padding:13px 16px;font-size:18px;border-radius:var(--r-sm);font-weight:700;min-height:52px}
+.form-card{background:var(--surf);border:1px solid var(--border);border-radius:var(--r);padding:16px;box-shadow:var(--sh);margin-bottom:10px}
+.form-card .sec{margin-top:2px}
+.frow{display:flex;gap:10px;align-items:center;margin-bottom:12px;flex-wrap:wrap}
+.seg{flex:1;background:var(--surf);border:2px solid var(--border);border-radius:var(--r-sm);padding:16px;font-weight:700;font-size:17px;color:var(--ink2);min-height:var(--tap)}
+.seg.on{background:var(--terra);color:#fff;border-color:var(--terra)}
+.chk{display:flex;align-items:center;gap:10px;font-size:17px;color:var(--ink);font-weight:600;min-height:var(--tap)}
+.chk input{width:26px;height:26px;accent-color:var(--terra)}
+.stat-chip{display:inline-block;font-size:14px;font-weight:700;padding:6px 12px;border-radius:var(--pill);margin:3px 5px 3px 0;font-family:var(--mono)}
+.op-card{background:var(--surf);border:1px solid var(--border);border-radius:var(--r-sm);padding:15px;box-shadow:var(--sh)}
+.op-card.paro{border-left:6px solid var(--red);background:#FCEFEB}
+.op-head{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:8px}
+.op-name{font-weight:800;font-size:19px}
+.op-card .usub{font-size:15px;color:var(--muted);line-height:1.6}
+.op-card .usub b{color:var(--ink);font-family:var(--mono);font-size:17px}
+.badge{font-size:14px;font-weight:800;padding:7px 13px;border-radius:var(--pill);white-space:nowrap}
+.badge.act{background:var(--green);color:#fff}
+.badge.par{background:var(--red);color:#fff}
+.badge.off{background:var(--surf2);color:var(--muted)}
+.aj-card{background:var(--surf);border:1px solid var(--border);border-radius:var(--r-sm);padding:15px;display:flex;justify-content:space-between;align-items:center;gap:12px}
+.aj-card .uid{font-family:var(--sans);font-weight:800;font-size:17px}
+.aj-est{font-size:14px;font-weight:800;padding:7px 13px;border-radius:var(--pill)}
+.aj-est.pend{background:var(--amber-soft);color:var(--amber)}
+.aj-est.aprob{background:var(--green-soft);color:#1F5A31}
+.aj-est.rech{background:var(--red-soft);color:var(--red)}
+.loteInput{font-family:var(--mono)!important;font-size:19px!important;font-weight:700!important;min-height:56px}
+input[type=number]{font-family:var(--mono)}
+
+/* ---------- tablet en planta ---------- */
+@media(min-width:720px){
+  main{padding:22px 26px 48px}
+  .turno-time{font-size:52px}
+  .kbox .kn{font-size:40px}
+  .kbox .kl{font-size:13px}
+  .urow .crono{font-size:32px}
+  .serie .snom{font-size:26px}
+  .serie .sbtns{flex-direction:row}
+  .serie .sbtns button{flex:1}
+}
+
+
+/* ============================================================
+   v4 · Acabado profesional (añadidos sobre v3)
+   ============================================================ */
+
+/* iconos SVG de línea: tamaño y alineación coherentes en botones */
+button svg,.badge svg,.sec svg,.urow svg{width:22px;height:22px;flex-shrink:0;stroke-width:2;vertical-align:-4px}
+.scan-tools button,.btn-terra,.btnfin,.btn-ink,.btn-turno,.btn-turno-fin,.paro-banner button,
+.serie .sbtns button,.serie .sconfirm,.motivos button,.logout,.syncbar button{
+  display:inline-flex;align-items:center;justify-content:center;gap:10px;line-height:1
+}
+.motivos button{justify-content:flex-start}
+.motivos button svg{width:26px;height:26px}
+.sec svg{width:19px;height:19px;color:var(--muted)}
+
+/* jerarquía de superficie: la tarjeta activa destaca sin ruido */
+.scan-card,.form-card{border-color:#D3CFC5}
+.turno-on{box-shadow:0 2px 4px rgba(25,24,20,.10),0 14px 32px rgba(25,24,20,.16)}
+.serie{box-shadow:0 2px 4px rgba(176,85,47,.10),0 14px 32px rgba(176,85,47,.14)}
+.paro-banner{box-shadow:0 2px 4px rgba(178,58,34,.14),0 14px 32px rgba(178,58,34,.20)}
+
+/* estados que faltaban: cargando, deshabilitado, campo con error */
+.cargando,.loading{color:var(--muted);font-size:16px;padding:26px 2px;display:flex;align-items:center;gap:10px}
+.cargando::before,.loading::before{
+  content:"";width:18px;height:18px;border:2px solid var(--border);border-top-color:var(--terra);
+  border-radius:50%;animation:spin .8s linear infinite
+}
+@keyframes spin{to{transform:rotate(360deg)}}
+button:disabled{opacity:.4;pointer-events:none}
+input:disabled{background:var(--surf2);color:var(--muted)}
+.scan-row input.err,.buscar.err{border-color:var(--red);background:#FDF4F2}
+
+/* tabulares en todo lo que sea número, aunque el JS no ponga clase */
+.turno-time,.crono,.kn,.num,.scrono,.uid,.stat-chip,.loteInput,.pill-count{font-variant-numeric:tabular-nums}
+
+/* scroll y selección con acabado de app nativa */
+main{overscroll-behavior-y:contain}
+.lista,.subnav{scroll-behavior:smooth}
+::selection{background:var(--terra);color:#fff}
+body{-webkit-user-select:none;user-select:none}
+input,.uid,.det-row .v{-webkit-user-select:text;user-select:text}
+
+/* barra de estado del sistema en modo oscuro cuando la cabecera es negra */
+@supports(padding:max(0px)){
+  header{padding-top:max(11px,env(safe-area-inset-top))}
+}
+
+</style>
+</head>
+<body>
+
+<!-- ================= LOGIN ================= -->
+<section id="login">
+  <div class="logo">
+    <svg width="84" height="84" viewBox="0 0 512 512" style="display:block;margin:0 auto 12px">
+      <rect width="512" height="512" rx="120" fill="#B0552F"/>
+      <circle cx="256" cy="256" r="150" fill="none" stroke="#F4F2ED" stroke-width="10"/>
+      <polyline points="204,308 204,190 256,248 308,190 308,308" fill="none" stroke="#F4F2ED" stroke-width="36" stroke-linecap="round" stroke-linejoin="round"/>
+    </svg>
+    <h1>MOLYN</h1><p>PLANTA · NÚCLEOS</p>
+  </div>
+
+  <div id="userStep" style="width:100%;display:flex;flex-direction:column;align-items:center;gap:16px">
+    <div style="color:var(--muted);font-weight:700;font-size:16px">¿Quién eres?</div>
+    <div class="users" id="usersList"></div>
+  </div>
+
+  <div id="pinStep" class="hidden">
+    <div id="pinpad">
+      <div class="pin-name" id="pinName">—</div>
+      <div class="pin-dots" id="pinDots"></div>
+      <div class="pin-err" id="pinErr"></div>
+      <div class="keys" id="keys"></div>
+      <button class="back" onclick="Login.back()">← Cambiar usuario</button>
+    </div>
+  </div>
+</section>
+
+<!-- ================= APP (tras login) ================= -->
+<div id="app" class="hidden">
+  <header>
+    <div class="brand"><svg width="22" height="22" viewBox="0 0 512 512" style="margin-right:9px"><rect width="512" height="512" rx="120" fill="#B0552F"/><circle cx="256" cy="256" r="150" fill="none" stroke="#F4F2ED" stroke-width="12"/><polyline points="204,308 204,190 256,248 308,190 308,308" fill="none" stroke="#F4F2ED" stroke-width="40" stroke-linecap="round" stroke-linejoin="round"/></svg>MOLYN · PLANTA</div>
+    <div class="who"><span id="whoName">—</span><button class="logout" onclick="Est.abrir()">Estándares</button><button class="logout" onclick="Login.logout()">Salir</button></div>
+  </header>
+  <div id="clockBar" class="clockbar"><span id="clockTxt">—</span></div>
+  <div id="syncBar" class="syncbar ok">
+    <span id="syncDot">●</span>
+    <span id="syncTxt">Conectado</span>
+    <button id="syncBtn" class="hidden" onclick="Q.flush(true)">Sincronizar ahora</button>
+  </div>
+
+  <!-- vista operario -->
+  <main id="viewOperario" class="hidden">
+    <!-- barra de turno -->
+    <div id="turnoBar" class="turno-bar">
+      <div id="turnoOff" class="hidden">
+        <button class="btn-turno" onclick="Op.comenzarTurno()"></button>
+      </div>
+      <div id="turnoOn" class="hidden turno-on">
+        <div>
+          <div class="turno-lbl">Turno en curso</div>
+          <div class="turno-time"><span id="turnoCrono">0:00</span></div>
+          <div class="turno-sub"><span id="turnoProd">Productivo 0:00</span> · <span id="turnoOcup">—</span></div>
+        </div>
+        <button class="btn-turno-fin" onclick="Op.finalizarTurno()"></button>
+      </div>
+    </div>
+
+    <!-- barra de parada -->
+    <div id="paroBanner" class="paro-banner hidden">
+      <div style="display:flex;align-items:center;gap:12px">
+        <span id="paroIco"></span>
+        <div><b id="paroMotivo">Parada</b><div style="font-size:15px;opacity:.85;font-weight:600">Parada activa</div></div>
+      </div>
+      <div style="display:flex;align-items:center;gap:14px">
+        <span id="paroTiempo" style="font-size:26px;font-weight:700">0:00</span>
+        <button onclick="Op.reanudar()">Reanudar</button>
+      </div>
+    </div>
+
+    <!-- escaneo -->
+    <div class="scan-card">
+      <div id="reader"></div>
+      <div class="scan-row">
+        <input id="manualCode" placeholder="Código de etiqueta" autocomplete="off">
+        <button class="btn-terra" onclick="Op.manual()">Enviar</button>
+      </div>
+      <div class="scan-tools">
+        <button id="camBtn" class="btn-ghost" onclick="Op.toggleCam()"></button>
+        <button class="btn-paro" onclick="Op.abrirParada()"></button>
+      </div>
+      <button class="btn-ghost full" style="margin-top:10px" onclick="Op.abrirAviso()">Avisar a oficina · sobran etiquetas / salió de más</button>
+    </div>
+
+    <!-- KPIs del día -->
+    <div class="kpis3">
+      <div class="kbox"><div class="kn" id="kHoy">0</div><div class="kl">Hechas hoy</div></div>
+      <div class="kbox"><div class="kn" id="kUxh">0</div><div class="kl">Uds/hora</div></div>
+      <div class="kbox"><div class="kn" id="kEnCurso">0</div><div class="kl">En curso</div></div>
+    </div>
+
+    <!-- serie de stock activa -->
+    <div id="serieBox"></div>
+
+    <!-- en curso -->
+    <h3 class="sec">En fabricación <span id="curCount" class="pill-count">0</span></h3>
+    <div id="enCurso" class="lista"></div>
+    <div id="enCursoVacio" class="vacio">Escanea una etiqueta para empezar a fabricar.</div>
+
+    <!-- últimas -->
+    <h3 class="sec">Últimas fabricadas</h3>
+    <div id="ultimas" class="lista"></div>
+    <div id="ultimasVacio" class="vacio">Todavía no has terminado ninguna hoy.</div>
+  </main>
+
+  <!-- modal parada -->
+  <div id="paroModal" class="modal hidden">
+    <div class="modal-box">
+      <h3>¿Por qué paras?</h3>
+      <div class="motivos" id="motivosBox"></div>
+      <button class="btn-ghost full" onclick="Op.cerrarModal()">Cancelar</button>
+    </div>
+  </div>
+
+  <div id="estModal" class="est hidden">
+    <div class="est-top">
+      <button id="estVolver" class="logout hidden" onclick="Est.volver()">‹ Lista</button>
+      <b id="estTit">Estándares de trabajo</b>
+      <button class="logout" onclick="Est.cerrar()">Cerrar</button>
+    </div>
+    <div id="estLista" class="est-lista"></div>
+    <iframe id="estFrame" class="hidden" title="Estándar de trabajo"></iframe>
+  </div>
+
+  <div id="abiertoModal" class="modal hidden">
+    <div class="modal-box">
+      <h3>Ojo: se quedó trabajo abierto</h3>
+      <div id="abBody"></div>
+    </div>
+  </div>
+
+  <div id="avisoModal" class="modal hidden">
+    <div class="modal-box">
+      <h3>Avisar a oficina</h3>
+      <div class="frow">
+        <button id="avMenos" class="seg on" onclick="Op.setAviso('ot')">Sobran etiquetas</button>
+        <button id="avMas" class="seg" onclick="Op.setAviso('alta')">Salió de más</button>
+      </div>
+      <input id="avOT" class="buscar" placeholder="OT (ej. OT00022)…" list="avOtList" autocomplete="off">
+      <datalist id="avOtList"></datalist>
+      <div class="frow">
+        <input id="avCant" type="number" min="1" value="1" class="buscar" style="max-width:130px;margin-bottom:0">
+        <span id="avCantLbl" style="font-weight:700;color:var(--ink2)">etiquetas que sobran</span>
+      </div>
+      <input id="avNota" class="buscar" placeholder="Nota (opcional)…" autocomplete="off">
+      <button class="btn-ink full" onclick="Op.enviarAviso(this)">Enviar a oficina</button>
+      <button class="btn-ghost full" style="margin-top:8px" onclick="Op.cerrarAviso()">Cancelar</button>
+    </div>
+  </div>
+
+  <!-- vista encargado -->
+  <main id="viewEncargado" class="hidden">
+    <div class="subnav" id="encNav">
+      <button class="on" data-sec="consumo" onclick="Enc.go('consumo')">Consumo</button>
+      <button data-sec="stock" onclick="Enc.go('stock')">Stock</button>
+      <button data-sec="operarios" onclick="Enc.go('operarios')">Puestos</button>
+      <button data-sec="inventario" onclick="Enc.go('inventario')">Inventario</button>
+      <button data-sec="partes" onclick="Enc.go('partes')">Partes</button>
+      <button data-sec="lotes" onclick="Enc.go('lotes')">Lotes</button>
+    </div>
+
+    <!-- CONSUMO -->
+    <section id="secConsumo" class="enc-sec">
+      <div class="scan-card">
+        <div id="readerC"></div>
+        <div class="scan-row">
+          <input id="manualC" placeholder="Código de etiqueta" autocomplete="off">
+          <button class="btn-terra" onclick="Enc.manualConsumo()">Añadir</button>
+        </div>
+        <div class="scan-tools">
+          <button id="camBtnC" class="btn-ghost" onclick="Enc.toggleCam()"></button>
+        </div>
+      </div>
+      <h3 class="sec">Por consumir <span id="cartCount" class="pill-count">0</span></h3>
+      <div id="cartList" class="lista"></div>
+      <div id="cartVacio" class="vacio">Escanea núcleos para añadirlos al consumo.</div>
+      <button id="btnAceptar" class="btn-ink full" onclick="Enc.aceptarConsumo()" disabled>Aceptar consumo</button>
+    </section>
+
+    <!-- STOCK -->
+    <section id="secStock" class="enc-sec hidden">
+      <input id="stockSearch" class="buscar" placeholder="Buscar núcleo por SKU o nombre…" oninput="Enc.renderStock()">
+      <div id="stockList" class="lista"></div>
+    </section>
+
+    <!-- OPERARIOS -->
+    <section id="secOperarios" class="enc-sec hidden">
+      <div class="row-top"><h3 class="sec">Ritmo y estado</h3><button class="btn-ghost sm" onclick="Enc.loadOperarios()" title="Actualizar"></button></div>
+      <div id="opsList" class="lista"></div>
+      <div id="opModal" class="modal-ov" onclick="if(event.target===this)Enc.cerrarDetalle()">
+        <div class="modal-bx" id="opModalBx"></div>
+      </div>
+    </section>
+
+    <!-- INVENTARIO -->
+    <section id="secInventario" class="enc-sec hidden">
+      <div class="form-card">
+        <h3 class="sec">Proponer ajuste</h3>
+        <div class="frow">
+          <button id="tipoAlta" class="seg on" onclick="Enc.setTipo('alta')">Sobran (alta)</button>
+          <button id="tipoBaja" class="seg" onclick="Enc.setTipo('baja')">Faltan (baja)</button>
+          <button id="tipoOT" class="seg" onclick="Enc.setTipo('ot')">OT: salieron menos</button>
+        </div>
+        <div id="ajOTWrap" style="display:none">
+          <input id="ajOT" class="buscar" placeholder="OT (ej. OT00022)…" list="otList" autocomplete="off">
+          <datalist id="otList"></datalist>
+          <div class="vacio" style="padding:0 0 12px;text-align:left">Pon cuántas etiquetas de esa OT han sobrado porque salieron menos núcleos. Oficina quitará esas unidades de la OT.</div>
+        </div>
+        <input id="ajNuc" class="buscar" placeholder="Núcleo (SKU)…" list="nucList" autocomplete="off">
+        <datalist id="nucList"></datalist>
+        <div class="frow">
+          <input id="ajCant" type="number" min="1" value="1" class="buscar" style="max-width:130px;margin-bottom:0">
+          <span id="ajCantLbl" style="font-weight:700;color:var(--ink2)">uds</span>
+          <label id="ajMadurWrap" class="chk"><input type="checkbox" id="ajMadur"> Que maduren</label>
+        </div>
+        <input id="ajNota" class="buscar" placeholder="Nota (opcional)…" autocomplete="off">
+        <button class="btn-ink full" onclick="Enc.enviarAjuste()">Enviar a oficina</button>
+      </div>
+      <h3 class="sec">Mis solicitudes</h3>
+      <div id="ajList" class="lista"></div>
+      <div id="ajVacio" class="vacio">No has enviado solicitudes.</div>
+    </section>
+
+    <!-- PARTES -->
+    <section id="secPartes" class="enc-sec hidden">
+      <div class="row-top">
+        <input id="parteFecha" type="date" class="buscar" style="max-width:210px;margin-bottom:0" onchange="Enc.loadPartes()">
+        <button class="btn-ghost sm" onclick="Enc.loadPartes()">Ver</button>
+      </div>
+      <div class="row-top" style="margin-top:10px">
+        <input id="parteBuscar" class="buscar" placeholder="Buscar OT de cualquier día (ej. OT00026)…" autocomplete="off" style="margin-bottom:0" onkeydown="if(event.key==='Enter')Enc.buscarOT()">
+        <button class="btn-ghost sm" onclick="Enc.buscarOT()">Buscar</button>
+      </div>
+      <div id="parteBusq" class="lista"></div>
+      <h3 class="sec">OT lanzadas ese día</h3>
+      <div id="parteLanz" class="lista"></div>
+      <div id="parteLanzVacio" class="vacio">Sin OT ese día.</div>
+      <h3 class="sec">Fabricadas / consumidas ese día</h3>
+      <div id="parteMov" class="lista"></div>
+      <div id="parteMovVacio" class="vacio">Sin movimientos ese día.</div>
+    </section>
+
+    <!-- LOTES -->
+    <section id="secLotes" class="enc-sec hidden">
+      <div class="row-top"><h3 class="sec">Lote por programa</h3><button class="btn-ghost sm" onclick="Enc.loadLotes()" title="Actualizar"></button></div>
+      <div class="vacio" style="padding-top:0">Unidades que se fabrican por lote de cada programa. Los programas se leen del catálogo.</div>
+      <div id="lotesList" class="lista"></div>
+      <button id="lotesSave" class="btn-terra full" onclick="Enc.saveLotes()">Guardar lotes</button>
+    </section>
+  </main>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.116.0/dist/umd/supabase.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+<script>
+const SUPABASE_URL = ES_PRUEBAS ? "https://iqxstbjqjycsmlpdpwza.supabase.co" : "https://kmfdywyeesybqqfmfxys.supabase.co";
+const SUPABASE_KEY = ES_PRUEBAS ? "sb_publishable_2iYIXB64r_-To-qIP98npw_7m8cD5yO" : "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImttZmR5d3llZXN5YnFxZm1meHlzIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQyNTA0MDMsImV4cCI6MjA5OTgyNjQwM30.dDrPPvqxqWBqFTA5FNC3YLAVK53nm8V2tn5JKHN9ve4";
+const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
+// ============================================================
+//  ICONOS (SVG de línea — sustituyen a los emoji)
+// ============================================================
+const _svg = (p,w) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="${w||2}" stroke-linecap="round" stroke-linejoin="round">${p}</svg>`;
+const ICO = {
+  play:  _svg('<path d="M7 4l13 8-13 8V4z"/>'),
+  stop:  _svg('<rect x="6" y="6" width="12" height="12" rx="1"/>'),
+  pause: _svg('<rect x="7" y="5" width="4" height="14" rx="1"/><rect x="14" y="5" width="4" height="14" rx="1"/>'),
+  cam:   _svg('<path d="M14.5 4h-5L8 6H4a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-4l-1.5-2z"/><circle cx="12" cy="13" r="3.5"/>'),
+  camOff:_svg('<path d="M14.5 4h-5L8 6H4a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V8"/><path d="M3 3l18 18"/>'),
+  check: _svg('<path d="M20 6L9 17l-5-5"/>'),
+  x:     _svg('<path d="M18 6L6 18M6 6l12 12"/>'),
+  plus:  _svg('<path d="M12 5v14M5 12h14"/>'),
+  up:    _svg('<path d="M12 19V5M5 12l7-7 7 7"/>'),
+  down:  _svg('<path d="M12 5v14M19 12l-7 7-7-7"/>'),
+  refresh:_svg('<path d="M21 12a9 9 0 1 1-3-6.7"/><path d="M21 4v5h-5"/>'),
+  coffee:_svg('<path d="M17 8h1a4 4 0 0 1 0 8h-1"/><path d="M3 8h14v9a4 4 0 0 1-4 4H7a4 4 0 0 1-4-4V8z"/>'),
+  food:  _svg('<path d="M3 2v7a3 3 0 0 0 6 0V2"/><path d="M6 9v13"/><path d="M18 2v20"/><path d="M15 2c0 4 6 4 6 0"/>'),
+  wrench:_svg('<path d="M14.7 6.3a4 4 0 0 0 5 5l-9.6 9.6a2.8 2.8 0 0 1-4-4L15.7 7.3z"/>'),
+  box:   _svg('<path d="M21 8l-9-5-9 5v8l9 5 9-5V8z"/><path d="M3 8l9 5 9-5"/>'),
+  swap:  _svg('<path d="M17 3l4 4-4 4"/><path d="M21 7H3"/><path d="M7 21l-4-4 4-4"/><path d="M3 17h18"/>')
+};
+const MOTIVOS = [
+  ['Desayuno','coffee'],['Comida','food'],['Avería','wrench'],['Falta material','box'],['Retrabajo','refresh'],['Cambio de puesto','swap'],['Otro','plus']
+];
+function solaparSeg(iniMs,finMs,intervalos){
+  let t=0;
+  for(const [a,b] of intervalos){ const lo=Math.max(iniMs,a), hi=Math.min(finMs,b); if(hi>lo) t+=(hi-lo)/1000; }
+  return t;
+}
+
+// ============================================================
+//  OFFLINE-FIRST: cola local + caché + estado de red
+// ============================================================
+const Q = {
+  key:'molyn_queue', failKey:'molyn_queue_failed', items:[], failed:[], flushing:false,
+  load(){
+    try{ this.items=JSON.parse(localStorage.getItem(this.key)||'[]'); }catch(e){ this.items=[]; }
+    try{ this.failed=JSON.parse(localStorage.getItem(this.failKey)||'[]'); }catch(e){ this.failed=[]; }
+    this.badge();
+  },
+  save(){ try{ localStorage.setItem(this.key, JSON.stringify(this.items)); }catch(e){} this.badge(); },
+  saveFailed(){ try{ localStorage.setItem(this.failKey, JSON.stringify(this.failed)); }catch(e){} this.badge(); },
+  enqueue(op){ op._id=Date.now()+'_'+Math.random().toString(36).slice(2,7); op._attempts=0; this.items.push(op); this.save(); this.flush(); },
+  async exec(op){
+    if(op.t==='insert'){ const {error}=await sb.from(op.table).insert(op.payload); if(error) throw error; }
+    else if(op.t==='update'){
+      let q=sb.from(op.table).update(op.payload);
+      for(const k in op.match){ const v=op.match[k]; if(v===null) q=q.is(k,null); else q=q.eq(k,v); }
+      const {error}=await q; if(error) throw error;
+    }
+    else if(op.t==='delete'){
+      let q=sb.from(op.table).delete();
+      for(const k in op.match){ const v=op.match[k]; if(v===null) q=q.is(k,null); else q=q.eq(k,v); }
+      const {error}=await q; if(error) throw error;
+    }
+    else if(op.t==='consumir_reserva'){
+      const {data}=await sb.from('reservas').select('id,cantidad').eq('sku',op.sku).eq('estado','pendiente').order('created_at').order('id').limit(1);
+      const r=data&&data[0]; if(!r) return;
+      if(r.cantidad>1){ const {error}=await sb.from('reservas').update({cantidad:r.cantidad-1}).eq('id',r.id); if(error) throw error; }
+      else { const {error}=await sb.from('reservas').update({estado:'consumida'}).eq('id',r.id); if(error) throw error; }
+    }
+  },
+  dropInsert(table, matchFn){ this.items=this.items.filter(op=>!(op.t==='insert'&&op.table===table&&matchFn(op.payload))); this.save(); },
+  async flush(manual){
+    if(this.flushing) return;
+    if(!navigator.onLine){ this.badge(); if(manual) toast('Sin conexión','err'); return; }
+    this.flushing=true; this.badge();
+    let ok=0, fail=0;
+    while(this.items.length){
+      const op=this.items[0];
+      try{ await this.exec(op); this.items.shift(); this.save(); ok++; }
+      catch(e){
+        const msg=(e&&e.message)||String(e);
+        // clave duplicada al insertar: el envío anterior sí llegó a la base de datos aunque se
+        // perdiera la respuesta (corte de red). Ya está guardado, así que se da por enviado.
+        if(op.t==='insert' && e && e.code==='23505'){ this.items.shift(); this.save(); ok++; continue; }
+        if(/Failed to fetch|NetworkError|network|fetch|timeout|Load failed/i.test(msg)){ break; }
+        op._attempts=(op._attempts||0)+1;
+        if(op._attempts>=5){
+          this.items.shift();
+          this.failed.push(Object.assign({},op,{_error:msg,_failedAt:new Date().toISOString()}));
+          this.saveFailed();
+          fail++;
+          console.error('Molyn: operación descartada tras 5 intentos', op, msg);
+        }else{
+          // se deja en su sitio (sin reordenar: el orden importa, p. ej. inicio antes que fin)
+          // y se reintenta en el siguiente ciclo de sincronización
+          this.save(); break;
+        }
+      }
+    }
+    this.flushing=false; this.badge();
+    if(manual && ok) toast(ok+' sincronizados','ok');
+    if(fail) toast(fail+' operación'+(fail>1?'es':'')+' no se pudo'+(fail>1?'ron':'')+' guardar. Avisa a oficina.','err');
+  },
+  badge(){
+    const n=this.items.length, nf=this.failed.length, bar=$('#syncBar'), txt=$('#syncTxt'), btn=$('#syncBtn');
+    if(!bar) return;
+    if(nf){ bar.className='syncbar err'; txt.textContent=nf+' error'+(nf>1?'es':'')+' sin guardar — avisa a oficina'+(n?' · '+n+' pendientes':''); btn.classList.toggle('hidden', n===0); return; }
+    if(!navigator.onLine){ bar.className='syncbar off'; txt.textContent='Sin conexión'+(n?' · '+n+' sin enviar':''); btn.classList.toggle('hidden', n===0); }
+    else if(n){ bar.className='syncbar pend'; txt.textContent=n+' sin enviar'; btn.classList.remove('hidden'); }
+    else { bar.className='syncbar ok'; txt.textContent='Conectado'; btn.classList.add('hidden'); }
+  }
+};
+// ---------- ESTÁNDARES de trabajo: qué hacer cuando pasa un problema concreto ----------
+// Para añadir uno nuevo: crear su página en estandares/ y añadir una línea aquí (y en Oficina).
+const ESTANDARES=[
+  {archivo:'estandares/turno-puesto.html', titulo:'Turno en el puesto',
+   problema:'De Comenzar a Finalizar: escanear y terminar el lote, paradas y sus motivos, paradas automáticas, qué hacer si quedó trabajo abierto y los mensajes de la tablet.'},
+  {archivo:'estandares/consumo-nucleos.html', titulo:'Consumir núcleos',
+   problema:'Encargado: cuándo y cómo consumir en la tablet, primero los más antiguos, qué hacer si avisa de maduración y los mensajes de error.'},
+  {archivo:'estandares/recuento-stock.html', titulo:'Recuento de stock',
+   problema:'Contar el almacén cada semana, comparar con la app, buscar la causa de las diferencias y pedir altas o bajas que aprueba oficina.'},
+  {archivo:'estandares/etiquetas.html', titulo:'Las etiquetas no cuadran con el corte',
+   problema:'Salen menos núcleos que etiquetas (19 lanzados, salen 18), sale uno de más, o se pierde o se rompe una etiqueta.'},
+  {archivo:'estandares/tablet-planta.html', titulo:'La tablet de planta',
+   problema:'Qué significa cada color de la barra de arriba, la cámara que no abre, la pantalla, la sesión y cómo actualizar la app.'},
+];
+const Est={
+  abrir(){ this.volver(); $('#estModal').classList.remove('hidden'); },
+  cerrar(){ $('#estModal').classList.add('hidden'); $('#estFrame').src='about:blank'; },
+  volver(){
+    $('#estTit').textContent='Estándares de trabajo';
+    $('#estVolver').classList.add('hidden'); $('#estFrame').classList.add('hidden'); $('#estFrame').src='about:blank';
+    $('#estLista').classList.remove('hidden');
+    $('#estLista').innerHTML=ESTANDARES.map((e,i)=>`<button class="est-item" onclick="Est.ver(${i})">
+      <span class="t">${esc(e.titulo)}</span><span class="d">${esc(e.problema)}</span><span class="v">Ver qué hacer ›</span></button>`).join('');
+  },
+  ver(i){
+    const e=ESTANDARES[i]; if(!e) return;
+    $('#estTit').textContent=e.titulo;
+    $('#estLista').classList.add('hidden'); $('#estVolver').classList.remove('hidden');
+    const f=$('#estFrame'); f.src=e.archivo; f.classList.remove('hidden');
+  }
+};
+
+function qInsert(table,payload){ Q.enqueue({t:'insert',table,payload}); }
+function qUpdate(table,match,payload){ Q.enqueue({t:'update',table,match,payload}); }
+function qDelete(table,match){ Q.enqueue({t:'delete',table,match}); }
+function qConsumirReserva(sku){ if(sku) Q.enqueue({t:'consumir_reserva',sku}); }
+
+const Cache={
+  set(k,v){ try{ localStorage.setItem('molyn_c_'+k, JSON.stringify(v)); }catch(e){} },
+  get(k){ try{ return JSON.parse(localStorage.getItem('molyn_c_'+k)); }catch(e){ return null; } }
+};
+async function readCached(k, fn){
+  try{ const v=await fn(); if(v!=null){ Cache.set(k,v); return v; } }
+  catch(e){}
+  const c=Cache.get(k); return c!=null? c : null;
+}
+// Supabase devuelve como mucho 1000 filas por consulta: esto pagina hasta traerlas todas.
+// 'order' debe dar un orden estable (si no, al paginar se pueden saltar o repetir filas).
+async function selAll(build, order){
+  let out=[], from=0; const size=1000;
+  while(true){
+    let q=build(); (order||[]).forEach(c=>{ q=q.order(c); });
+    const {data,error}=await q.range(from,from+size-1);
+    if(error) throw error;
+    out=out.concat(data||[]);
+    if(!data||data.length<size) break;
+    from+=size;
+  }
+  return out;
+}
+// fecha YYYY-MM-DD en hora LOCAL (toISOString usa UTC y de 00:00 a 02:00 da el día anterior)
+function inicioHoyIso(){ const d=new Date(); d.setHours(0,0,0,0); return d.toISOString(); }
+function ymdLocal(d){ return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); }
+
+// mantiene la pantalla encendida con la app abierta: si la tablet se bloquea, el JS se congela y
+// dejan de correr los cronómetros, la parada automática y la sincronización
+const Wake={ lock:null,
+  async on(){
+    try{
+      if(!('wakeLock' in navigator) || this.lock || document.visibilityState!=='visible') return;
+      this.lock=await navigator.wakeLock.request('screen');
+      this.lock.addEventListener('release',()=>{ this.lock=null; });
+    }catch(e){ this.lock=null; }
+  }
+};
+document.addEventListener('visibilitychange',()=>{
+  if(document.visibilityState!=='visible') return;
+  if(!$('#app').classList.contains('hidden')) Wake.on();
+  Q.flush(); // al volver a la app, envía lo que quedó pendiente mientras estaba en segundo plano
+});
+
+window.addEventListener('online', ()=>{ Q.badge(); Q.flush(); toast('Conexión recuperada','ok'); });
+window.addEventListener('offline', ()=>{ Q.badge(); toast('Sin conexión — se guardará local','err'); });
+
+const $ = s => document.querySelector(s);
+let _toastT=null;
+function toast(msg, type){const t=$('#toast');t.textContent=msg;t.className='toast show '+(type||'');clearTimeout(_toastT);_toastT=setTimeout(()=>t.className='toast',type==='err'?4000:2200)}
+
+const AV_COLORS = {operario:['#F7E8E0','#B0552F'], encargado:['#E1EAEF','#3C6375']};
+const ROL_LBL = {operario:'Operario', encargado:'Encargado'};
+
+const Login = {
+  // "users" mezcla puestos de trabajo (login compartido, sin persona concreta)
+  // y encargados (login personal, como antes). Los operarios ya no inician
+  // sesión individual: se fichan como parte de un puesto.
+  users: [], sel: null, pin: '', fallos: 0, bloqueoHasta: 0,
+  // la sesión de un PUESTO se guarda en localStorage (tablet fija del puesto: sobrevive a cerrar
+  // la app o reiniciar la tablet); la del ENCARGADO solo en sessionStorage (PIN personal)
+  savedUser(){
+    try{ const s=sessionStorage.getItem('molyn_user')||localStorage.getItem('molyn_puesto_user'); return s?JSON.parse(s):null; }catch(e){ return null; }
+  },
+  async init(){
+    const saved = this.savedUser();
+    if(saved){
+      this.enter(saved);
+      // si en Oficina han desactivado o borrado este puesto/encargado, se cierra la sesión guardada
+      const tabla = saved.tipo==='puesto' ? 'puestos_trabajo' : 'usuarios';
+      sb.from(tabla).select('id,activo').eq('id',saved.id).then(({data,error})=>{
+        if(!error && data && (!data.length || data[0].activo===false)){
+          try{ sessionStorage.removeItem('molyn_user'); localStorage.removeItem('molyn_puesto_user'); }catch(e){}
+          alert('Este usuario ya no está activo. Vuelve a elegir usuario.'); location.reload();
+        }
+      });
+      return;
+    }
+    // si no hay red al abrir la app, se usa la última lista de usuarios conocida
+    const users = await readCached('login_users', async()=>{
+      const [{data:puestos,error:e1},{data:encs,error:e2}] = await Promise.all([
+        sb.from('puestos_trabajo').select('id,nombre,pin').eq('activo',true).order('nombre'),
+        sb.from('usuarios').select('id,nombre,pin').eq('rol','encargado').eq('activo',true).order('nombre')
+      ]);
+      if(e1) throw e1; if(e2) throw e2;
+      return [
+        ...(puestos||[]).map(p=>({id:p.id, nombre:p.nombre, pin:p.pin, tipo:'puesto'})),
+        ...(encs||[]).map(u=>({id:u.id, nombre:u.nombre, pin:u.pin, tipo:'encargado'}))
+      ];
+    });
+    if(!users){ $('#usersList').innerHTML='<div class="vacio" style="grid-column:1/-1;text-align:center">No se pudo conectar con el servidor. Comprueba la conexión y <a href="#" onclick="event.preventDefault();location.reload()">vuelve a intentarlo</a>.</div>'; return; }
+    this.users = users;
+    this.renderUsers();
+  },
+  renderUsers(){
+    const c = $('#usersList');
+    c.innerHTML = this.users.map((u,i)=>{
+      const esPuesto = u.tipo==='puesto';
+      const [bg,fg] = esPuesto ? AV_COLORS.operario : (AV_COLORS.encargado||AV_COLORS.operario);
+      const ini = (u.nombre||'?').trim().charAt(0).toUpperCase();
+      return `<div class="ucard" onclick="Login.pick(${i})">
+        <div class="av" style="background:${bg};color:${fg}">${ini}</div>
+        <div class="nm">${esc(u.nombre)}</div>
+        <div class="rl">${esPuesto?'Puesto':'Encargado'}</div></div>`;
+    }).join('');
+  },
+  pick(i){
+    this.sel = this.users[i]; this.pin='';
+    // puesto creado en Oficina "sin PIN": entra directamente (antes se quedaba bloqueado en el teclado)
+    if(!this.sel.pin){ this.check(); return; }
+    $('#userStep').classList.add('hidden');
+    $('#pinStep').classList.remove('hidden');
+    $('#pinName').textContent = this.sel.nombre;
+    $('#pinErr').textContent='';
+    this.renderPad(); this.renderDots();
+  },
+  renderPad(){
+    const keys = ['1','2','3','4','5','6','7','8','9','','0','⌫'];
+    $('#keys').innerHTML = keys.map(k=>{
+      if(k==='') return `<div></div>`;
+      return `<button onclick="Login.key('${k}')">${k}</button>`;
+    }).join('');
+  },
+  renderDots(){
+    const n = this.sel ? Math.max(4, (this.sel.pin||'').length) : 4;
+    let h=''; for(let i=0;i<n;i++) h+=`<i class="${i<this.pin.length?'on':''}"></i>`;
+    $('#pinDots').innerHTML = h;
+  },
+  key(k){
+    const espera=Math.ceil((this.bloqueoHasta-Date.now())/1000);
+    if(espera>0){ $('#pinErr').textContent='Demasiados intentos. Espera '+espera+' s'; return; }
+    if(k==='⌫'){ this.pin=this.pin.slice(0,-1); }
+    else if(this.pin.length < 8){ this.pin+=k; }
+    this.renderDots();
+    if(this.pin.length === String(this.sel.pin||'').length) this.check();
+  },
+  check(){
+    if(!this.sel.pin || this.pin === String(this.sel.pin)){
+      this.fallos=0;
+      const u = {id:this.sel.id, nombre:this.sel.nombre, tipo:this.sel.tipo};
+      try{
+        if(u.tipo==='puesto') localStorage.setItem('molyn_puesto_user', JSON.stringify(u));
+        else sessionStorage.setItem('molyn_user', JSON.stringify(u));
+      }catch(e){}
+      this.enter(u);
+    }else{
+      this.fallos++;
+      // freno contra probar PINs al azar: tras 5 fallos seguidos, 30 s de espera
+      if(this.fallos>=5){ this.fallos=0; this.bloqueoHasta=Date.now()+30000; $('#pinErr').textContent='Demasiados intentos. Espera 30 s'; }
+      else $('#pinErr').textContent = 'PIN incorrecto';
+      this.pin=''; this.renderDots(); beep(false);
+    }
+  },
+  back(){
+    this.sel=null; this.pin='';
+    $('#pinStep').classList.add('hidden');
+    $('#userStep').classList.remove('hidden');
+  },
+  enter(u){
+    $('#login').classList.add('hidden');
+    $('#app').classList.remove('hidden');
+    $('#whoName').innerHTML = `<b>${esc((u.nombre||'').split(' ')[0])}</b>`;
+    Wake.on();
+    const esPuesto = u.tipo==='puesto';
+    $('#viewOperario').classList.toggle('hidden', !esPuesto);
+    $('#viewEncargado').classList.toggle('hidden', esPuesto);
+    if(esPuesto) Op.init(u);
+    else Enc.init(u);
+  },
+  logout(){
+    if(typeof Op!=='undefined' && Op.user && (Op.serie || Op.enCurso.size)){
+      if(!confirm('Tienes trabajo en curso en este puesto. Si sales, seguirá abierto y lo recuperarás al volver a entrar.\n\n¿Salir igualmente?')) return;
+    }
+    try{ sessionStorage.removeItem('molyn_user'); localStorage.removeItem('molyn_puesto_user'); }catch(e){}
+    location.reload();
+  }
+};
+function esc(s){return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
+
+// ============================================================
+//  VISTA OPERARIO
+// ============================================================
+const Op = {
+  user:null, enCurso:new Map(), ultimas:[], hechasHoy:0, duracionesHoy:[],
+  serie:null, serieSel:0,
+  paro:null, paroInicio:null, prodMap:{}, cam:null, camOn:false,
+  lastScan:{code:null, t:0}, ticking:false,
+  turno:null, turnoInicio:null, paradasSeg:0, paradasSesion:[], cfg:{descanso_min:60}, stdSku:{}, provisional:new Set(),
+  lastActivityTs:null,
+
+  async init(u){
+    this.user=u;
+    this.pintarIconos();
+    const cfg=await readCached('config', async()=>{
+      const {data}=await sb.from('config').select('descanso_min,hora_inicio,hora_fin,umbral_semanal,dias_historico').eq('id',1).single(); return data;
+    });
+    if(cfg) this.cfg=Object.assign(this.cfg,cfg);
+    const prods=await readCached('productos', async()=>{
+      const {data}=await sb.from('productos').select('sku,nombre'); return data;
+    });
+    (prods||[]).forEach(p=>this.prodMap[p.sku]=p.nombre);
+    await this.clasificarNucleos();
+    const ts=await readCached('tiempos_vig', async()=>{
+      const {data}=await sb.from('tiempos_sku').select('sku,mediana_seg,semana').eq('vigente',true); return data;
+    });
+    const semActual=isoWeekInfo(new Date()).label;
+    (ts||[]).forEach(t=>{ this.stdSku[t.sku]=Number(t.mediana_seg); if(t.semana===semActual) this.provisional.add(t.sku); });
+    this.tiempoTeoricoPrograma={};
+    try{
+      const {data:lp}=await sb.from('lotes_programa').select('programa,tiempo_teorico_seg');
+      (lp||[]).forEach(r=>{ if(r.tiempo_teorico_seg) this.tiempoTeoricoPrograma[r.programa]=r.tiempo_teorico_seg; });
+    }catch(e){}
+    await this.comprobarTurno();
+    this.loadSerie();
+    await this.reconstruir();
+    await this.comprobarParadaActiva();
+    this.lastActivityTs=Date.now();
+    if(!this.ticking){ this.ticking=true; setInterval(()=>this.tick(),1000); }
+    this.renderTurno(); this.render(); Q.badge();
+    this.revisarAbiertos();
+  },
+
+  markActivity(){ this.lastActivityTs=Date.now(); },
+
+  // tablet encendida toda la noche: al cambiar de día se recarga el estado desde la base de datos
+  // (el turno de ayer lo cierra el servidor y los contadores de "hoy" vuelven a cero)
+  async revisarCambioDia(){
+    const hoy=ymdLocal(new Date());
+    if(!this._dia){ this._dia=hoy; return; }
+    if(this._dia===hoy || this._cambiandoDia) return;
+    this._cambiandoDia=true;
+    try{
+      this._dia=hoy;
+      await Q.flush();
+      this.turno=null; this.turnoInicio=null; this.paradasSeg=0; this.paradasSesion=[];
+      this.paro=null; this.paroInicio=null; $('#paroBanner').classList.add('hidden');
+      await this.comprobarTurno(); await this.reconstruir(); await this.comprobarParadaActiva();
+      this.markActivity(); this.renderTurno(); this.render();
+      if(!this.turno) toast('Nuevo día: pulsa "Comenzar turno"','ok');
+      this.revisarAbiertos();
+    }finally{ this._cambiandoDia=false; }
+  },
+
+  // iconos fijos de la interfaz
+  pintarIconos(){
+    const set=(sel,html)=>{ const el=$(sel); if(el) el.innerHTML=html; };
+    set('#turnoOff button', ICO.play+'Comenzar turno');
+    set('#turnoOn .btn-turno-fin', ICO.stop+'Finalizar');
+    set('#paroIco', '<span style="display:inline-flex;width:26px;height:26px">'+ICO.pause+'</span>');
+    set('#camBtn', ICO.cam+'Cámara');
+    set('.scan-tools .btn-paro', ICO.pause+'Parada');
+    set('#motivosBox', MOTIVOS.map(m=>`<button onclick="Op.iniciarParada('${m[0]}')">${ICO[m[1]]}${m[0]}</button>`).join(''));
+  },
+
+  // tiempo teórico por defecto de un núcleo: el de su programa (N001-N012) si está configurado, si no 4:30
+  tiempoDefaultDe(sku){ return (this.tiempoTeoricoPrograma&&this.tiempoTeoricoPrograma[progDe(sku)])||270; },
+
+  async clasificarNucleos(){
+    this.tipoSku={};
+    const umbral=Number(this.cfg.umbral_semanal!=null?this.cfg.umbral_semanal:1);
+    const diasHist=Number(this.cfg.dias_historico||30);
+    try{
+      // igual que Oficina: solo el consumo de los últimos 35 días, paginado (antes traía TODO el
+      // histórico y, al pasar de 1000 consumos, se cortaba y la clasificación salía mal)
+      const cutoff=new Date(Date.now()-35*86400000).toISOString();
+      const data=await selAll(()=>sb.from('unidades').select('sku,consumida_at').eq('estado','consumida').gte('consumida_at',cutoff),['id']);
+      const byS={};
+      (data||[]).forEach(u=>{
+        if(!u.consumida_at) return;
+        const day=u.consumida_at.slice(0,10);
+        byS[u.sku]=byS[u.sku]||{}; byS[u.sku][day]=(byS[u.sku][day]||0)+1;
+      });
+      for(const sku in byS){
+        const days=Object.keys(byS[sku]).sort().reverse().slice(0,diasHist);
+        const tot=days.reduce((a,d)=>a+byS[sku][d],0);
+        const D=days.length? tot/days.length : 0;
+        this.tipoSku[sku]= D<umbral ? 'personalizado' : 'diario';
+      }
+    }catch(e){}
+    // "forzar a diario" manda por encima del cálculo por consumo (igual que en Oficina)
+    try{
+      const {data:forz}=await sb.from('productos').select('sku').eq('forzar_diario',true);
+      (forz||[]).forEach(p=>{ this.tipoSku[p.sku]='diario'; });
+    }catch(e){}
+  },
+  esDiario(sku){ return this.tipoSku && this.tipoSku[sku]==='diario'; },
+
+  // ---------- TURNO ----------
+  async comprobarTurno(){
+    try{
+      // solo turnos de HOY: uno abierto de un día anterior lo cierra el cierre automático del
+      // servidor (cierre_turnos.sql) y no debe arrastrarse al turno de hoy
+      const {data}=await sb.from('turnos').select('id,inicio').eq('puesto_id',this.user.id).is('fin',null).gte('inicio',inicioHoyIso()).order('inicio',{ascending:false}).limit(1);
+      if(data&&data.length){
+        this.turno=data[0]; this.turnoInicio=new Date(data[0].inicio).getTime();
+        const {data:pars}=await sb.from('paradas').select('inicio,fin').eq('puesto_id',this.user.id).gte('inicio',data[0].inicio);
+        this.paradasSeg=(pars||[]).filter(p=>p.fin).reduce((a,p)=>a+(new Date(p.fin)-new Date(p.inicio))/1000,0);
+        this.paradasSesion=(pars||[]).map(p=>({inicio:new Date(p.inicio).getTime(), fin:p.fin?new Date(p.fin).getTime():null}));
+      }
+    }catch(e){}
+  },
+  async comenzarTurno(){
+    if(this.turno) return; // evita abrir dos turnos con un doble toque
+    const inicio=new Date().toISOString();
+    qInsert('turnos',{puesto_id:this.user.id, inicio});
+    this.turno={inicio}; this.turnoInicio=new Date(inicio).getTime(); this.paradasSeg=0; this.paradasSesion=[];
+    this.markActivity();
+    toast('Turno iniciado','ok'); beep(true);
+    this.renderTurno();
+    this.autoPreparacion(); // hasta que se escanee la primera unidad, cuenta como preparación
+  },
+  async finalizarTurno(){
+    if(!this.turno) return;
+    if(this.paro && this.paro.motivo!=='Preparación' && this.paro.motivo!=='Inactividad'){ toast('Reanuda la parada antes de finalizar','err'); return; }
+    const abierto=this.serie?'un lote abierto':(this.enCurso.size?this.enCurso.size+' unidad(es) en fabricación':'');
+    if(!confirm(abierto?'Tienes '+abierto+' sin terminar. Seguirá abierto para el próximo turno.\n\n¿Finalizar tu turno igualmente?':'¿Finalizar tu turno?')) return;
+    // la parada automática (preparación/inactividad) se cierra junto con el turno
+    if(this.paro) await this.reanudar(true);
+    const fin=Date.now();
+    qUpdate('turnos', {puesto_id:this.user.id, fin:null}, {fin:new Date().toISOString()});
+    const dur=(fin-this.turnoInicio)/1000;
+    const prod=Math.max(0,dur-this.paradasSeg);
+    const ocup=dur>0?Math.round(prod/dur*100):0;
+    alert(`Turno finalizado.\n\nTurno: ${fmtHM(dur)}\nParadas: ${fmtHM(this.paradasSeg)}\nProductivo: ${fmtHM(prod)}\nOcupación: ${ocup}%\nHechas: ${this.hechasHoy}`);
+    this.turno=null; this.turnoInicio=null; this.paradasSeg=0; this.paradasSesion=[];
+    this.renderTurno();
+  },
+  async autoParada(){
+    if(this.paro || !this.turno) return;
+    const inicio=new Date().toISOString();
+    qInsert('paradas',{puesto_id:this.user.id, motivo:'Inactividad', inicio});
+    this.paro={motivo:'Inactividad', inicio}; this.paroInicio=new Date(inicio).getTime();
+    this.mostrarParo();
+    this.paradasSesion.push({inicio:this.paroInicio, fin:null});
+    toast('Parada automática por inactividad','err');
+  },
+  // se llama justo al terminar una unidad si no queda nada más en curso: cuenta el
+  // hueco hasta la siguiente OT como "Preparación" en vez de dejarlo sin contar
+  async autoPreparacion(){
+    if(this.paro || !this.turno || this.enCurso.size>0 || this.serie) return;
+    const inicio=new Date().toISOString();
+    qInsert('paradas',{puesto_id:this.user.id, motivo:'Preparación', inicio});
+    this.paro={motivo:'Preparación', inicio}; this.paroInicio=new Date(inicio).getTime();
+    this.mostrarParo();
+    this.paradasSesion.push({inicio:this.paroInicio, fin:null});
+  },
+  renderTurno(){
+    const on=!!this.turno;
+    $('#turnoOn').classList.toggle('hidden',!on);
+    $('#turnoOff').classList.toggle('hidden',on);
+    $('#reader').closest('.scan-card').style.opacity = on? '1':'.5';
+  },
+
+  async reconstruir(){
+    // OJO: no tocar this.serie aquí — loadSerie() ya lo restauró de localStorage justo antes
+    // de llamar a esta función, y machacarlo a null deshacía la recuperación del lote en curso
+    this.enCurso.clear(); this.hechasHoy=0; this.duracionesHoy=[]; this.ultimas=[]; this.__algunas=false;
+    try{
+      // solo las últimas 2 semanas y paginado: antes traía TODO el historial del puesto y, al pasar
+      // de 1000 eventos, Supabase cortaba y se perdían precisamente los más recientes (lo de hoy)
+      const desde=new Date(Date.now()-14*86400000).toISOString();
+      const evs=await selAll(()=>sb.from('fabricacion_eventos')
+        .select('unidad_id,ot,sku,tipo,ts').eq('puesto_id',this.user.id).gte('ts',desde),['ts','unidad_id','tipo']);
+      const byU={};
+      (evs||[]).forEach(e=>{(byU[e.unidad_id]=byU[e.unidad_id]||[]).push(e);});
+      const hoy=new Date(); hoy.setHours(0,0,0,0);
+      for(const uid in byU){
+        const arr=byU[uid];
+        const inis=arr.filter(e=>e.tipo==='inicio');
+        const fins=arr.filter(e=>e.tipo==='fin');
+        if(inis.length>fins.length){
+          const li=inis[inis.length-1];
+          this.enCurso.set(uid,{unidad_id:uid,ot:li.ot,sku:li.sku,start:new Date(li.ts).getTime(),ts:li.ts});
+        }
+        fins.forEach((f,idx)=>{
+          if(new Date(f.ts)>=hoy){
+            this.hechasHoy++;
+            const ini=inis[idx];
+            if(ini){ const d=(new Date(f.ts)-new Date(ini.ts))/1000; if(d>0&&d<86400){this.duracionesHoy.push(d); this.ultimas.unshift({unidad_id:f.unidad_id,sku:f.sku,seg:d});}}
+          }
+        });
+      }
+      this.ultimas=this.ultimas.slice(0,10);
+    }catch(e){ }
+    try{
+      const qev=Q.items.filter(o=>o.t==='insert'&&o.table==='fabricacion_eventos'&&o.payload.puesto_id===this.user.id);
+      const inis=qev.filter(o=>o.payload.tipo==='inicio');
+      const fins=new Set(qev.filter(o=>o.payload.tipo==='fin').map(o=>o.payload.unidad_id));
+      inis.forEach(o=>{ const p=o.payload; if(!fins.has(p.unidad_id) && !this.enCurso.has(p.unidad_id)){
+        this.enCurso.set(p.unidad_id,{unidad_id:p.unidad_id,ot:p.ot,sku:p.sku,start:new Date(p.ts).getTime(),ts:p.ts});
+      }});
+      const tq=Q.items.filter(o=>o.table==='turnos'&&o.t==='insert'&&o.payload.puesto_id===this.user.id);
+      if(tq.length && !this.turno && tq[tq.length-1].payload.inicio>=inicioHoyIso()){ const p=tq[tq.length-1].payload; this.turno={inicio:p.inicio}; this.turnoInicio=new Date(p.inicio).getTime(); }
+      const pq=Q.items.filter(o=>o.table==='paradas'&&o.t==='insert'&&o.payload.puesto_id===this.user.id);
+      if(pq.length && !this.paro && pq[pq.length-1].payload.inicio>=inicioHoyIso()){ const p=pq[pq.length-1].payload; this.paro={motivo:p.motivo,inicio:p.inicio}; this.paroInicio=new Date(p.inicio).getTime(); this.mostrarParo(); }
+    }catch(e){}
+    if(this.serie && this.serie.marker){ this.enCurso.delete(this.serie.marker); }
+  },
+
+  async comprobarParadaActiva(){
+    try{
+      const {data}=await sb.from('paradas').select('id,motivo,inicio')
+        .eq('puesto_id',this.user.id).is('fin',null).gte('inicio',inicioHoyIso()).order('inicio',{ascending:false}).limit(1);
+      if(data&&data.length){ this.paro=data[0]; this.paroInicio=new Date(data[0].inicio).getTime(); this.mostrarParo(); }
+    }catch(e){}
+  },
+
+  // ---------- escaneo ----------
+  async manual(){
+    const c=$('#manualCode').value.trim().toUpperCase();
+    if(c){ $('#manualCode').value=''; this.scan(c); }
+  },
+  async scan(code){
+    code=String(code).trim().toUpperCase();
+    if(!this.turno){ toast('Comienza el turno primero','err'); beep(false); return; }
+    if(this.paro){
+      if(this.paro.motivo==='Inactividad'||this.paro.motivo==='Preparación'){ await this.reanudar(true); }
+      else { toast('Hay una parada activa. Reanuda para seguir.','err'); beep(false); return; }
+    }
+    if(this.serie){ toast('Tienes un lote en curso. Ciérralo con los botones.','err'); beep(false); return; }
+    this.markActivity();
+    if(this.enCurso.has(code)){ return this.finalizar(code); }
+    return this.iniciar(code);
+  },
+  async iniciar(code){
+    let u=null, notFound=false;
+    try{
+      const {data}=await sb.from('unidades').select('id,ot,sku,estado').eq('id',code).limit(1);
+      if(data && data.length) u=data[0]; else notFound=true;
+    }catch(e){ u=null; }
+    if(notFound){ toast('Código no reconocido: '+code,'err'); beep(false); return; }
+    if(u){
+      if(u.estado!=='pendiente'){
+        toast(u.estado==='stock'?'Esa unidad ya está fabricada':'Unidad '+u.estado+', no válida','err'); beep(false); return;
+      }
+    }else{
+      u={id:code, ot:(code.split('-')[0]||''), sku:''};
+    }
+    try{
+      const {data:od}=await sb.from('ordenes').select('nombre,sku').eq('ot',u.ot).limit(1);
+      if(od&&od[0]){ if(!u.sku && od[0].sku) u.sku=od[0].sku; u._nombre=od[0].nombre; }
+    }catch(e){}
+    return this.iniciarSerie(u);
+  },
+
+  async iniciarSerie(u){
+    let pend=[];
+    try{
+      const {data}=await sb.from('unidades').select('id').eq('ot',u.ot).eq('estado','pendiente').order('id');
+      pend=(data||[]).map(x=>x.id);
+    }catch(e){ pend=[]; }
+    if(!pend.length) pend=[u.id];
+    const start=Date.now();
+    const marker=pend[0];
+    const startIso=new Date(start).toISOString();
+    const esPers=!this.esDiario(u.sku);
+    this.serie={ot:u.ot, sku:u.sku, nombre:(this.prodMap[u.sku]||u._nombre||u.sku),
+                start, pendientes:pend, marker, markerTs:startIso, personalizado:esPers};
+    this.serieSel=pend.length;
+    qInsert('fabricacion_eventos',{unidad_id:marker,ot:u.ot,sku:u.sku,puesto_id:this.user.id,tipo:'inicio',ts:startIso});
+    this.saveSerie();
+    toast('Lote abierto · '+pend.length+' uds pendientes','ok'); beep(true);
+    this.render();
+  },
+  async terminarSerie(count){
+    const s=this.serie; if(!s || this._terminando) return;
+    this._terminando=true; // un doble toque en "Terminar" no debe cerrar el lote dos veces
+    try{
+      count=Math.max(1, Math.min(count, s.pendientes.length));
+      const finMs=Date.now();
+      const retra=await this.retrabajosDe(new Date(s.start).toISOString(), new Date(finMs).toISOString());
+      const total=Math.max(1,(finMs-s.start)/1000 - solaparSeg(s.start,finMs,retra));
+      const per=total/count;
+      const units=s.pendientes.slice(0,count);
+      units.forEach((uid,i)=>{
+        const iniTs=new Date(s.start + per*i*1000).toISOString();
+        const finTs=new Date(s.start + per*(i+1)*1000).toISOString();
+        if(!(i===0 && uid===s.marker)){
+          qInsert('fabricacion_eventos',{unidad_id:uid,ot:s.ot,sku:s.sku,puesto_id:this.user.id,tipo:'inicio',ts:iniTs});
+        }
+        qInsert('fabricacion_eventos',{unidad_id:uid,ot:s.ot,sku:s.sku,puesto_id:this.user.id,tipo:'fin',ts:finTs});
+        qUpdate('unidades',{id:uid,estado:'pendiente'},{estado:'stock',fabricada_at:finTs});
+        this.hechasHoy++; this.duracionesHoy.push(per);
+        this.ultimas.unshift({unidad_id:uid,sku:s.sku,seg:per});
+      });
+      this.ultimas=this.ultimas.slice(0,10);
+      const sku=s.sku;
+      toast(count+' uds terminadas · '+fmtDur(per)+' c/u','ok'); beep(true,true);
+      this.serie=null; this.serieSel=0; this.clearSerie();
+      this.markActivity();
+      if(sku && (this.stdSku[sku]===undefined || this.provisional.has(sku))) this.aprenderTiempo(sku);
+      this.autoPreparacion();
+      this.render();
+    }finally{ this._terminando=false; }
+  },
+  cancelarSerie(){
+    if(!this.serie) return;
+    if(!confirm('¿Descartar el lote sin registrar nada?')) return;
+    const s=this.serie;
+    Q.dropInsert('fabricacion_eventos', p=>p.unidad_id===s.marker && p.tipo==='inicio' && p.ts===s.markerTs);
+    qDelete('fabricacion_eventos',{unidad_id:s.marker, tipo:'inicio', ts:s.markerTs});
+    this.serie=null; this.serieSel=0; this.clearSerie(); this.render();
+  },
+  saveSerie(){ try{ localStorage.setItem('molyn_serie_'+this.user.id, JSON.stringify(this.serie)); }catch(e){} },
+  clearSerie(){ try{ localStorage.removeItem('molyn_serie_'+this.user.id); }catch(e){} },
+  loadSerie(){ try{ const s=JSON.parse(localStorage.getItem('molyn_serie_'+this.user.id)||'null'); if(s&&s.ot){ this.serie=s; this.serieSel=s.pendientes?s.pendientes.length:1; } }catch(e){} },
+  serieMas(){ if(this.serie){ this.serieSel=Math.min(this.serie.pendientes.length, this.serieSel+1); this.render(); } },
+  serieMenos(){ if(this.serie){ this.serieSel=Math.max(1, this.serieSel-1); this.render(); } },
+  toggleAlgunas(){ if(!this.serie) return; this.__algunas=!this.__algunas; if(this.__algunas){ const n=this.serie.pendientes.length; this.serieSel=Math.max(1,n-1); } this.render(); },
+  async finalizar(code){
+    const it=this.enCurso.get(code);
+    if(!it) return;
+    this.enCurso.delete(code); // ya, antes del await: un doble toque no debe registrar dos "fin"
+    const ts=new Date().toISOString();
+    const finMs=new Date(ts).getTime();
+    const retra=await this.retrabajosDe(new Date(it.start).toISOString(), ts);
+    const seg=Math.max(0,(finMs-it.start)/1000 - solaparSeg(it.start,finMs,retra));
+    qInsert('fabricacion_eventos',{unidad_id:code,ot:it.ot,sku:it.sku,puesto_id:this.user.id,tipo:'fin',ts});
+    qUpdate('unidades',{id:code,estado:'pendiente'},{estado:'stock',fabricada_at:ts});
+    this.hechasHoy++; this.duracionesHoy.push(seg);
+    this.ultimas.unshift({unidad_id:code,sku:it.sku,seg}); this.ultimas=this.ultimas.slice(0,10);
+    toast('Terminada '+code+' ('+fmtDur(seg)+')','ok'); beep(true,true);
+    this.markActivity();
+    if(it.sku && (this.stdSku[it.sku]===undefined || this.provisional.has(it.sku))) this.aprenderTiempo(it.sku);
+    this.autoPreparacion();
+    this.render();
+  },
+
+  async aprenderTiempo(sku){
+    try{
+      const hoy=new Date(); hoy.setHours(0,0,0,0);
+      const {data}=await sb.from('fabricacion_eventos').select('unidad_id,tipo,ts').eq('sku',sku).gte('ts',hoy.toISOString());
+      const byU={}; (data||[]).forEach(e=>{(byU[e.unidad_id]=byU[e.unidad_id]||[]).push(e);});
+      const durs=[];
+      for(const uid in byU){
+        const a=byU[uid]; const i=a.find(x=>x.tipo==='inicio'); const f=a.find(x=>x.tipo==='fin');
+        if(i&&f){ const d=(new Date(f.ts)-new Date(i.ts))/1000; if(d>0&&d<86400) durs.push(d); }
+      }
+      const med=medianaJs(durs);
+      if(med>0){
+        const wk=isoWeekInfo(new Date());
+        await sb.from('tiempos_sku').update({vigente:false}).eq('sku',sku).eq('vigente',true);
+        await sb.from('tiempos_sku').upsert(
+          {sku, semana:wk.label, ini_semana:wk.monday, mediana_seg:Math.round(med), n_unidades:durs.length, vigente:true},
+          {onConflict:'sku,semana'});
+        this.stdSku[sku]=med;
+        this.provisional.add(sku);
+        this.render();
+      }
+    }catch(e){}
+  },
+
+  // ---------- retrabajo (paradas con motivo Retrabajo dentro de una pieza) ----------
+  async retrabajosDe(desdeIso, hastaIso){
+    try{
+      const {data}=await sb.from('paradas').select('inicio,fin').eq('puesto_id',this.user.id).eq('motivo','Retrabajo').gte('inicio',desdeIso).lte('inicio',hastaIso);
+      return (data||[]).filter(p=>p.fin).map(p=>[new Date(p.inicio).getTime(), new Date(p.fin).getTime()]);
+    }catch(e){ return []; }
+  },
+
+  // ---------- trabajo que se quedó abierto de un día anterior ----------
+  // Al entrar (o al cambiar de día con la app abierta) se revisa si hay un lote o una unidad
+  // "en fabricación" que empezó otro día. Se pregunta qué hacer: registrar las terminadas con el
+  // tiempo estimado (no las horas que estuvo abierto), reiniciar la cuenta, o decidir luego.
+  revisarAbiertos(){
+    const h0=new Date(); h0.setHours(0,0,0,0);
+    const items=[];
+    if(this.serie && this.serie.start<h0.getTime()) items.push({tipo:'serie'});
+    for(const it of this.enCurso.values()) if(it.start<h0.getTime()) items.push({tipo:'unidad',it});
+    this._abiertos=items;
+    if(items.length) this.siguienteAbierto();
+  },
+  async siguienteAbierto(){
+    const x=(this._abiertos||[]).shift();
+    if(!x){ $('#abiertoModal').classList.add('hidden'); this.render(); return; }
+    if(x.tipo==='serie'){
+      const s=this.serie; if(!s) return this.siguienteAbierto();
+      // estado real: puede que la OT ya se haya fabricado o cerrado desde oficina
+      let pend=s.pendientes||[];
+      try{ const {data,error}=await sb.from('unidades').select('id').eq('ot',s.ot).eq('estado','pendiente').order('id'); if(!error) pend=(data||[]).map(u=>u.id); }catch(e){}
+      if(!pend.length){ this.descartarSerie(); toast(s.ot+' ya no tiene unidades pendientes: se quita de en curso','ok'); return this.siguienteAbierto(); }
+      if(pend.includes(s.marker)) pend=[s.marker,...pend.filter(i=>i!==s.marker)];
+      s.pendientes=pend; this.serieSel=pend.length; this.saveSerie();
+      this.pintarAbierto({serie:true,ot:s.ot,sku:s.sku,nombre:s.nombre||this.prodMap[s.sku]||s.sku,start:s.start,n:pend.length});
+    }else{
+      const it=x.it;
+      let estado='pendiente';
+      try{ const {data,error}=await sb.from('unidades').select('estado').eq('id',it.unidad_id).maybeSingle(); if(!error) estado=data?data.estado:'borrada'; }catch(e){}
+      if(estado!=='pendiente'){
+        this.quitarInicio(it);
+        toast(it.unidad_id+(estado==='stock'?' ya estaba fabricada':' ya no está pendiente')+': se quita de en curso','ok');
+        return this.siguienteAbierto();
+      }
+      this.pintarAbierto({serie:false,ot:it.ot,sku:it.sku,nombre:this.prodMap[it.sku]||it.sku,start:it.start,n:1,unidad:it});
+    }
+  },
+  pintarAbierto(d){
+    this._ab=d;
+    const fecha=new Date(d.start).toLocaleString('es-ES',{weekday:'long',day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'});
+    const std=this.stdSku[d.sku]||this.tiempoDefaultDe(d.sku);
+    $('#abBody').innerHTML=`
+      <p style="font-size:17px;line-height:1.45;margin:0 0 14px">${d.serie?'El lote de la OT':'La unidad'} <b>${esc(d.serie?d.ot:d.unidad.unidad_id)}</b> (${esc(d.nombre)}) se quedó abierto desde el <b>${esc(fecha)}</b>${d.serie?` con <b>${d.n}</b> uds pendientes`:''}. ¿Qué hacemos?</p>
+      ${d.serie?`<div class="frow"><span style="font-weight:800;font-size:17px">¿Cuántas se terminaron?</span>
+        <input id="abN" type="number" min="0" max="${d.n}" value="${d.n}" class="buscar" style="max-width:110px;margin-bottom:0;text-align:center"><span style="font-weight:700">de ${d.n}</span></div>`:''}
+      <button class="btn-ink full" onclick="Op.abiertoFabricar(this)">${d.serie?'Registrar las terminadas':'Se terminó: registrarla'}</button>
+      <div class="vacio" style="text-align:left;padding:8px 0 14px">Se apunta el tiempo estimado (${fmtDur(std)} por unidad), no las horas que estuvo abierto.${d.serie?' Las que no se terminaron siguen pendientes en la OT.':''}</div>
+      <button class="btn-ghost full" onclick="Op.abiertoReiniciar()">Reiniciar la cuenta: empezar de nuevo</button>
+      <button class="btn-ghost full" style="margin-top:8px" onclick="Op.abiertoLuego()">Decidir más tarde</button>`;
+    $('#abiertoModal').classList.remove('hidden');
+  },
+  // quita el "inicio" de una unidad que quedó colgado (para que deje de salir en fabricación)
+  quitarInicio(it){
+    const ts=it.ts||new Date(it.start).toISOString();
+    Q.dropInsert('fabricacion_eventos', p=>p.unidad_id===it.unidad_id && p.tipo==='inicio' && p.ts===ts);
+    qDelete('fabricacion_eventos',{unidad_id:it.unidad_id, tipo:'inicio', ts});
+    this.enCurso.delete(it.unidad_id);
+  },
+  // cierra el lote abierto sin registrar nada (quita su "inicio")
+  descartarSerie(){
+    const s=this.serie; if(!s) return;
+    Q.dropInsert('fabricacion_eventos', p=>p.unidad_id===s.marker && p.tipo==='inicio' && p.ts===s.markerTs);
+    qDelete('fabricacion_eventos',{unidad_id:s.marker, tipo:'inicio', ts:s.markerTs});
+    this.serie=null; this.serieSel=0; this.clearSerie();
+  },
+  async abiertoFabricar(btn){
+    const d=this._ab; if(!d || this._abBusy) return;
+    this._abBusy=true; if(btn) btn.disabled=true;
+    try{
+      const std=this.stdSku[d.sku]||this.tiempoDefaultDe(d.sku);
+      if(d.serie){
+        const s=this.serie; if(!s) return;
+        const n=Math.max(0,Math.min(d.n,parseInt($('#abN').value)||0));
+        if(n===0){ toast('Pon cuántas se terminaron, o reinicia la cuenta','err'); return; }
+        const units=s.pendientes.slice(0,n);
+        // cada unidad con el tiempo estimado, seguidas desde que se abrió el lote
+        units.forEach((uid,i)=>{
+          const iniTs=new Date(s.start+std*i*1000).toISOString(), finTs=new Date(s.start+std*(i+1)*1000).toISOString();
+          if(uid!==s.marker) qInsert('fabricacion_eventos',{unidad_id:uid,ot:s.ot,sku:s.sku,puesto_id:this.user.id,tipo:'inicio',ts:i===0?s.markerTs:iniTs});
+          qInsert('fabricacion_eventos',{unidad_id:uid,ot:s.ot,sku:s.sku,puesto_id:this.user.id,tipo:'fin',ts:finTs});
+          qUpdate('unidades',{id:uid,estado:'pendiente'},{estado:'stock',fabricada_at:finTs});
+        });
+        // si el marcador del lote no estaba entre las terminadas, su "inicio" quedaría colgado
+        if(!units.includes(s.marker)){
+          Q.dropInsert('fabricacion_eventos', p=>p.unidad_id===s.marker && p.tipo==='inicio' && p.ts===s.markerTs);
+          qDelete('fabricacion_eventos',{unidad_id:s.marker, tipo:'inicio', ts:s.markerTs});
+        }
+        this.serie=null; this.serieSel=0; this.clearSerie();
+        toast(n+' uds registradas en '+s.ot+(n<d.n?' · '+(d.n-n)+' siguen pendientes':''),'ok');
+      }else{
+        const it=d.unidad, finTs=new Date(it.start+std*1000).toISOString();
+        qInsert('fabricacion_eventos',{unidad_id:it.unidad_id,ot:it.ot,sku:it.sku,puesto_id:this.user.id,tipo:'fin',ts:finTs});
+        qUpdate('unidades',{id:it.unidad_id,estado:'pendiente'},{estado:'stock',fabricada_at:finTs});
+        this.enCurso.delete(it.unidad_id);
+        toast(it.unidad_id+' registrada','ok');
+      }
+      this.siguienteAbierto();
+    }finally{ this._abBusy=false; if(btn) btn.disabled=false; }
+  },
+  abiertoReiniciar(){
+    const d=this._ab; if(!d) return;
+    if(d.serie){
+      const s=this.serie; if(!s) return this.siguienteAbierto();
+      if(this.turno){
+        // el lote sigue abierto, pero la cuenta empieza ahora
+        const iso=new Date().toISOString();
+        qUpdate('fabricacion_eventos',{unidad_id:s.marker,tipo:'inicio',ts:s.markerTs},{ts:iso});
+        s.start=new Date(iso).getTime(); s.markerTs=iso; this.saveSerie();
+        toast('Cuenta reiniciada: el lote de '+s.ot+' empieza ahora','ok');
+      }else{
+        this.descartarSerie();
+        toast('Cuenta reiniciada. Comienza el turno y escanea una etiqueta de '+s.ot+' para empezar','ok');
+      }
+    }else{
+      this.quitarInicio(d.unidad);
+      toast('Cuenta reiniciada. Escanea '+d.unidad.unidad_id+' para empezarla de nuevo','ok');
+    }
+    this.siguienteAbierto();
+  },
+  abiertoLuego(){ this._abiertos=[]; $('#abiertoModal').classList.add('hidden'); this.render(); },
+
+  // ---------- avisos a oficina: sobran etiquetas de una OT / salió uno de más ----------
+  setAviso(t){
+    this.avTipo=t;
+    $('#avMenos').classList.toggle('on',t==='ot'); $('#avMas').classList.toggle('on',t==='alta');
+    $('#avCantLbl').textContent=t==='ot'?'etiquetas que sobran':'núcleos de más';
+  },
+  async abrirAviso(){
+    this.setAviso('ot');
+    // propone la OT con la que está trabajando el puesto
+    const cur=(this.serie&&this.serie.ot)||[...this.enCurso.values()].map(x=>x.ot).filter(Boolean).pop()||'';
+    $('#avOT').value=cur; $('#avCant').value='1'; $('#avNota').value='';
+    $('#avisoModal').classList.remove('hidden');
+    try{
+      const {data}=await sb.from('ordenes').select('ot,sku,cantidad').eq('estado','abierta').order('ot',{ascending:false}).limit(300);
+      this.otMap={}; (data||[]).forEach(o=>this.otMap[o.ot]=o);
+      $('#avOtList').innerHTML=(data||[]).map(o=>`<option value="${esc(o.ot)}">${esc(this.prodMap[o.sku]||o.sku)} · ${o.cantidad} uds</option>`).join('');
+    }catch(e){}
+  },
+  cerrarAviso(){ $('#avisoModal').classList.add('hidden'); },
+  async enviarAviso(btn){
+    const ot=$('#avOT').value.trim().toUpperCase(), cant=parseInt($('#avCant').value)||0;
+    if(!ot){ toast('Escribe la OT','err'); return; }
+    if(cant<1){ toast('Cantidad no válida','err'); return; }
+    if(!navigator.onLine){ toast('Sin conexión: envíalo cuando vuelva la red','err'); return; }
+    btn.disabled=true;
+    try{
+      let o=this.otMap&&this.otMap[ot];
+      if(!o){ const {data}=await sb.from('ordenes').select('ot,sku').eq('ot',ot).maybeSingle(); o=data; }
+      if(!o){ toast('Esa OT no existe','err'); return; }
+      const mas=this.avTipo==='alta', nota=$('#avNota').value.trim();
+      // "salió de más" es un alta de ese núcleo (que madure, recién cortado); oficina imprime su etiqueta
+      const row={sku:o.sku, tipo:mas?'alta':'ot_menos', ot, cantidad:cant, madurar:mas, estado:'pendiente',
+                 puesto_id:this.user.id, nota:[mas?'Salió de más en '+ot:'',nota].filter(Boolean).join(' · ')||null};
+      const {error}=await sb.from('ajustes_inventario').insert(row);
+      if(error) throw new Error(/puesto_id|\bot\b|column/i.test(error.message)?'falta ejecutar peticiones_puesto.sql en Supabase ('+error.message+')':error.message);
+      this.cerrarAviso(); toast('Enviado a oficina','ok');
+    }catch(e){ toast('Error: '+e.message,'err'); }
+    finally{ btn.disabled=false; }
+  },
+
+  // ---------- paradas ----------
+  abrirParada(){ $('#paroModal').classList.remove('hidden'); },
+  cerrarModal(){ $('#paroModal').classList.add('hidden'); },
+  async iniciarParada(motivo){
+    this.cerrarModal();
+    const inicio=new Date().toISOString();
+    qInsert('paradas',{puesto_id:this.user.id, motivo, inicio});
+    this.paro={motivo, inicio}; this.paroInicio=new Date(inicio).getTime(); this.mostrarParo();
+    this.paradasSesion.push({inicio:this.paroInicio, fin:null});
+  },
+  async reanudar(silent){
+    if(!this.paro) return;
+    qUpdate('paradas', {puesto_id:this.user.id, fin:null}, {fin:new Date().toISOString()});
+    if(this.turno && this.paroInicio){ this.paradasSeg += (Date.now()-this.paroInicio)/1000; }
+    const abierta=this.paradasSesion[this.paradasSesion.length-1];
+    if(abierta && abierta.fin==null) abierta.fin=Date.now();
+    this.paro=null; this.paroInicio=null;
+    this.markActivity();
+    $('#paroBanner').classList.add('hidden');
+    if(!silent) toast('Trabajo reanudado','ok');
+  },
+  mostrarParo(){
+    $('#paroMotivo').textContent=this.paro.motivo;
+    $('#paroBanner').classList.remove('hidden');
+  },
+
+  // ---------- cámara ----------
+  async toggleCam(){
+    if(this.camOn){ await this.stopCam(); return; }
+    $('#reader').innerHTML='';
+    try{
+      this.cam=new Html5Qrcode('reader', {verbose:false});
+      const cfg={fps:10, qrbox:{width:230,height:230}, aspectRatio:1.0};
+      const onScan=txt=>{ const now=Date.now(); if(txt===this.lastScan.code && now-this.lastScan.t<3000) return; this.lastScan={code:txt,t:now}; this.scan(txt); };
+      try{
+        await this.cam.start({facingMode:'environment'}, cfg, onScan, ()=>{});
+      }catch(e1){
+        const cams=await Html5Qrcode.getCameras();
+        if(cams && cams.length){ await this.cam.start(cams[cams.length-1].id, cfg, onScan, ()=>{}); }
+        else throw e1;
+      }
+      this.camOn=true; $('#camBtn').innerHTML=ICO.camOff+'Apagar';
+    }catch(e){ toast('No se pudo abrir la cámara: '+(e.message||e),'err'); $('#reader').innerHTML=''; }
+  },
+  async stopCam(){
+    try{ if(this.cam){ await this.cam.stop(); this.cam.clear(); } }catch(e){}
+    this.camOn=false; this.cam=null; $('#camBtn').innerHTML=ICO.cam+'Cámara'; $('#reader').innerHTML='';
+  },
+
+  // ---------- render / tick ----------
+  tick(){
+    const now=Date.now();
+    this.revisarCambioDia();
+    const intervalosParo=this.paradasSesion.map(p=>[p.inicio, p.fin==null?now:p.fin]);
+    this.enCurso.forEach((it)=>{
+      const seg=(now-it.start)/1000 - solaparSeg(it.start,now,intervalosParo);
+      const el=document.getElementById('c_'+cssId(it.unidad_id));
+      if(el) el.textContent=fmtDur(seg);
+      const std=this.stdSku[it.sku]||0;
+      const bar=document.getElementById('p_'+cssId(it.unidad_id));
+      const row=document.getElementById('row_'+cssId(it.unidad_id));
+      if(std>0 && bar){
+        const pct=Math.min(100, seg/std*100);
+        bar.style.width=pct+'%';
+        const pasado = seg>std;
+        bar.style.background = pasado? 'var(--red)' : (pct>80? '#C9862B' : 'var(--green)');
+        if(row){ row.classList.toggle('over', pasado); if(el) el.style.color = pasado? 'var(--red)':''; }
+      }
+    });
+    if(this.paro){ $('#paroTiempo').textContent=fmtDur((now-this.paroInicio)/1000); }
+    if(this.serie){
+      const seg=(now-this.serie.start)/1000 - solaparSeg(this.serie.start,now,intervalosParo);
+      const el=document.getElementById('serieCrono'); if(el) el.textContent=fmtDur(seg);
+      const std=(this.stdSku[this.serie.sku]||this.tiempoDefaultDe(this.serie.sku))*this.serie.pendientes.length;
+      const bar=document.getElementById('serieProg');
+      if(bar && std>0){
+        const pct=Math.min(100, seg/std*100);
+        bar.style.width=pct+'%';
+        bar.style.background = seg>std? 'var(--red)' : (pct>80? '#C9862B' : 'var(--green)');
+      }
+    }
+    if(this.turno){
+      const dur=(now-this.turnoInicio)/1000;
+      let paradas=this.paradasSeg + (this.paro? (now-this.paroInicio)/1000 : 0);
+      const prod=Math.max(0,dur-paradas);
+      const ocup=dur>0?Math.round(prod/dur*100):0;
+      $('#turnoCrono').textContent=fmtHM(dur);
+      $('#turnoProd').textContent='Productivo '+fmtHM(prod);
+      $('#turnoOcup').textContent='Ocupación '+ocup+'%';
+    }
+    if(this.turno && !this.paro && this.enCurso.size===0 && !this.serie){
+      const idleMs = now - (this.lastActivityTs||now);
+      if(idleMs >= 3*60*1000) this.autoParada();
+    }
+  },
+  render(){
+    const sb2=$('#serieBox');
+    if(this.serie){
+      const s=this.serie, n=s.pendientes.length, sel=Math.min(this.serieSel||n, n);
+      const esPers=s.personalizado;
+      sb2.innerHTML=`<div class="serie"${esPers?' style="border-color:#7A4B8C"':''}>
+        <span class="stag"${esPers?' style="background:#7A4B8C"':''}>${esPers?'LOTE PERSONALIZADO':'LOTE DE STOCK'}</span>
+        <div class="snom">${esc(s.nombre)}</div>
+        <div class="ssub">${esc(s.ot)} · ${n} unidad${n===1?'':'es'} pendiente${n===1?'':'s'}</div>
+        <div class="ssub" style="margin-top:4px">Llevas <b id="serieCrono">0:00</b> con este lote</div>
+        <div class="ssub" style="margin-top:2px">Tiempo teórico para terminar: <b>${fmtDur((this.stdSku[s.sku]||this.tiempoDefaultDe(s.sku))*n)}</b></div>
+        <div class="prog" style="margin-top:8px"><i id="serieProg"></i></div>
+        <div class="sbtns">
+          <button class="btodas" onclick="Op.terminarSerie(${n})">${ICO.check}Terminar ${n===1?'la unidad':'las '+n}</button>
+          <button class="balgunas" onclick="Op.toggleAlgunas()">Terminar solo algunas</button>
+        </div>
+        ${this.__algunas?`<div class="stepper">
+            <button onclick="Op.serieMenos()">−</button>
+            <div class="num">${sel}</div>
+            <button onclick="Op.serieMas()">+</button>
+          </div>
+          <button class="sconfirm" onclick="Op.__algunas=false;Op.terminarSerie(${sel})">${ICO.check}Terminar ${sel} de ${n}</button>`:''}
+        <div style="text-align:center;margin-top:6px"><a href="#" onclick="event.preventDefault();Op.cancelarSerie()">Descartar lote</a></div>
+      </div>`;
+    } else { sb2.innerHTML=''; this.__algunas=false; }
+
+    $('#kHoy').textContent=this.hechasHoy;
+    $('#kEnCurso').textContent=this.enCurso.size;
+    const uxh = this.duracionesHoy.length ? Math.round(3600/(this.duracionesHoy.reduce((a,b)=>a+b,0)/this.duracionesHoy.length)) : 0;
+    $('#kUxh').textContent=uxh;
+    $('#curCount').textContent=this.enCurso.size;
+
+    const cont=$('#enCurso'); const arr=[...this.enCurso.values()];
+    $('#enCursoVacio').classList.toggle('hidden', arr.length>0);
+    cont.innerHTML=arr.map(it=>{
+      const nom=this.prodMap[it.sku]||it.sku;
+      const std=this.stdSku[it.sku]||this.tiempoDefaultDe(it.sku);
+      const refTxt = this.stdSku[it.sku]? `ref. ${fmtDur(std)}` : `teórico ${fmtDur(std)}`;
+      return `<div class="urow curso" id="row_${cssId(it.unidad_id)}">
+        <div style="flex:1;min-width:0">
+          <div class="uid">${esc(it.unidad_id)}</div>
+          <div class="usub">${esc(nom)} · <span class="ref">${refTxt}</span></div>
+          <div class="prog"><i id="p_${cssId(it.unidad_id)}"></i></div>
+        </div>
+        <div style="display:flex;align-items:center;gap:10px">
+          <div class="crono" id="c_${cssId(it.unidad_id)}">0:00</div>
+          <button class="btnfin" data-uid="${esc(it.unidad_id)}" onclick="Op.finalizar(this.dataset.uid)">${ICO.check}Terminar</button>
+        </div></div>`;
+    }).join('');
+
+    $('#ultimasVacio').classList.toggle('hidden', this.ultimas.length>0);
+    $('#ultimas').innerHTML=this.ultimas.map(u=>{
+      const nom=this.prodMap[u.sku]||u.sku;
+      return `<div class="urow done">
+        <div style="min-width:0"><div class="uid">${esc(u.unidad_id)}</div><div class="usub">${esc(nom)}</div></div>
+        <div class="crono" style="display:flex;align-items:center;gap:7px"><span style="display:inline-flex;width:19px;height:19px">${ICO.check}</span>${fmtDur(u.seg)}</div></div>`;
+    }).join('');
+  }
+};
+
+function progDe(sku){ const m=(sku||'').match(/N\d{3}/); return m?m[0]:'—'; }
+function fmtDur(s){s=Math.max(0,Math.floor(s));const m=Math.floor(s/60),ss=s%60;if(m>=60){const h=Math.floor(m/60);return h+':'+String(m%60).padStart(2,'0')+':'+String(ss).padStart(2,'0');}return m+':'+String(ss).padStart(2,'0');}
+function medianaJs(a){if(!a.length)return 0;const v=[...a].sort((x,y)=>x-y);const n=v.length;return n%2?v[(n-1)/2]:(v[n/2-1]+v[n/2])/2;}
+function isoWeekInfo(d){
+  const dt=new Date(Date.UTC(d.getFullYear(),d.getMonth(),d.getDate()));
+  const day=(dt.getUTCDay()+6)%7;
+  const monday=new Date(dt); monday.setUTCDate(dt.getUTCDate()-day);
+  const thursday=new Date(monday); thursday.setUTCDate(monday.getUTCDate()+3);
+  const yStart=new Date(Date.UTC(thursday.getUTCFullYear(),0,1));
+  const week=Math.ceil((((thursday-yStart)/86400000)+1)/7);
+  return {label:thursday.getUTCFullYear()+'-W'+String(week).padStart(2,'0'), monday:monday.toISOString().slice(0,10)};
+}
+function fmtHM(s){s=Math.max(0,Math.floor(s));const h=Math.floor(s/3600),m=Math.floor((s%3600)/60);return h>0?(h+'h '+String(m).padStart(2,'0')+'m'):(m+'m');}
+function cssId(s){return String(s).replace(/[^a-zA-Z0-9]/g,'_');}
+let _ac;
+function beep(ok,dbl){
+  try{ _ac=_ac||new (window.AudioContext||window.webkitAudioContext)();
+    const t=_ac.currentTime; const mk=(f,s,d)=>{const o=_ac.createOscillator(),g=_ac.createGain();o.frequency.value=f;o.connect(g);g.connect(_ac.destination);g.gain.setValueAtTime(.12,t+s);g.gain.exponentialRampToValueAtTime(.001,t+s+d);o.start(t+s);o.stop(t+s+d);};
+    if(!ok){mk(220,0,.25);} else if(dbl){mk(660,0,.1);mk(880,.12,.14);} else {mk(720,0,.12);}
+  }catch(e){}
+}
+
+// ============================================================
+//  VISTA ENCARGADO
+// ============================================================
+const Enc = {
+  user:null, sec:'consumo', cart:new Map(), cam:null, camOn:false,
+  lastScan:{code:null,t:0}, mad:2, prodMap:{}, ajTipo:'alta',
+  stockData:[], ticking:false,
+
+  async init(u){
+    this.user=u;
+    this.pintarIconos();
+    try{
+      const {data:cfg}=await sb.from('config').select('maduracion').eq('id',1).single();
+      if(cfg && cfg.maduracion!=null) this.mad=cfg.maduracion;
+    }catch(e){}
+    try{
+      const {data:prods}=await sb.from('productos').select('sku,nombre').order('sku');
+      (prods||[]).forEach(p=>this.prodMap[p.sku]=p.nombre);
+      $('#nucList').innerHTML=(prods||[]).map(p=>`<option value="${esc(p.sku)}">${esc(p.nombre)}</option>`).join('');
+    }catch(e){}
+    $('#parteFecha').value=ymdLocal(new Date());
+    if(!this.ticking){ this.ticking=true; setInterval(()=>this.tick(),1000); }
+    this.go('consumo');
+  },
+
+  pintarIconos(){
+    $('#camBtnC').innerHTML=ICO.cam+'Cámara';
+    document.querySelectorAll('#secOperarios .btn-ghost.sm, #secLotes .btn-ghost.sm').forEach(b=>{ b.innerHTML=ICO.refresh; });
+  },
+
+  go(sec){
+    this.sec=sec;
+    document.querySelectorAll('#encNav button').forEach(b=>b.classList.toggle('on', b.dataset.sec===sec));
+    ['consumo','stock','operarios','inventario','partes','lotes'].forEach(s=>{
+      $('#sec'+s.charAt(0).toUpperCase()+s.slice(1)).classList.toggle('hidden', s!==sec);
+    });
+    if(sec!=='consumo' && this.camOn) this.stopCam();
+    if(sec==='stock') this.loadStock();
+    if(sec==='operarios') this.loadOperarios();
+    if(sec==='inventario') this.loadAjustes();
+    if(sec==='partes') this.loadPartes();
+    if(sec==='lotes') this.loadLotes();
+    this.startAutoSec();
+  },
+  // refresco automático de la pestaña abierta (stock/puestos/inventario/partes), cada 5s.
+  // "consumo" y "lotes" no se tocan: ahí el encargado está escribiendo/escaneando activamente
+  // (antes el refresco de "lotes" borraba cada 5 s lo que se estaba tecleando).
+  startAutoSec(){
+    this.stopAutoSec();
+    const recargar={stock:()=>this.loadStock(true), operarios:()=>this.loadOperarios(true), inventario:()=>this.loadAjustes(), partes:()=>this.loadPartes()};
+    const fn=recargar[this.sec];
+    // el stock completo es una consulta más pesada: cada 15 s basta
+    if(fn) this._secTimer=setInterval(fn,this.sec==='stock'?15000:5000);
+  },
+  stopAutoSec(){ if(this._secTimer){ clearInterval(this._secTimer); this._secTimer=null; } },
+
+  // ---------- CONSUMO ----------
+  manualConsumo(){ const c=$('#manualC').value.trim().toUpperCase(); if(c){ $('#manualC').value=''; this.addCart(c); } },
+  async addCart(code){
+    code=String(code).trim().toUpperCase();
+    if(this.cart.has(code)){ toast('Ya está en la lista','err'); return; }
+    let u=null, notFound=false;
+    try{ const {data}=await sb.from('unidades').select('id,ot,sku,estado,fabricada_at').eq('id',code).limit(1); if(data&&data.length) u=data[0]; else notFound=true; }
+    catch(e){ u=null; }
+    if(notFound){ toast('Código no reconocido: '+code,'err'); beep(false); return; }
+    if(u){
+      if(u.estado!=='stock'){ toast(u.estado==='pendiente'?'Aún no fabricada':'No consumible ('+u.estado+')','err'); beep(false); return; }
+      if(u.fabricada_at){
+        const dispo=new Date(u.fabricada_at).getTime()+this.mad*86400000;
+        if(Date.now()<dispo){
+          const fFecha=new Date(dispo).toLocaleDateString('es-ES',{day:'2-digit',month:'2-digit',year:'numeric'});
+          if(!confirm('⚠️ '+code+' todavía está en MADURACIÓN (disponible el '+fFecha+').\n\n¿Seguro que quieres consumirlo de todos modos?')){ beep(false); return; }
+        }
+      }
+      this.cart.set(code,{unidad_id:code,ot:u.ot,sku:u.sku,nombre:this.prodMap[u.sku]||u.sku});
+    }else{
+      this.cart.set(code,{unidad_id:code,ot:(code.split('-')[0]||''),sku:'',nombre:code});
+    }
+    beep(true); this.renderCart();
+  },
+  removeCart(code){ this.cart.delete(code); this.renderCart(); },
+  renderCart(){
+    const arr=[...this.cart.values()];
+    $('#cartCount').textContent=arr.length;
+    $('#cartVacio').classList.toggle('hidden', arr.length>0);
+    $('#btnAceptar').disabled=arr.length===0;
+    $('#btnAceptar').textContent=arr.length? `Aceptar consumo (${arr.length})`:'Aceptar consumo';
+    $('#cartList').innerHTML=arr.map(it=>`<div class="urow">
+      <div style="min-width:0"><div class="uid">${esc(it.unidad_id)}</div><div class="usub">${esc(it.nombre)} · ${esc(it.ot)}</div></div>
+      <button class="btn-ghost sm" data-uid="${esc(it.unidad_id)}" onclick="Enc.removeCart(this.dataset.uid)">${ICO.x}</button></div>`).join('');
+  },
+  async aceptarConsumo(){
+    const arr=[...this.cart.values()];
+    if(!arr.length) return;
+    if(!confirm(`¿Consumir ${arr.length} núcleos?`)) return;
+    const now=new Date().toISOString();
+    for(const it of arr){
+      qUpdate('unidades',{id:it.unidad_id,estado:'stock'},{estado:'consumida',consumida_at:now});
+      this.consumirReserva(it.sku);
+    }
+    toast(arr.length+' en cola de consumo','ok'); beep(true,true);
+    this.cart.clear(); this.renderCart();
+  },
+  consumirReserva(sku){ qConsumirReserva(sku); },
+
+  // ---------- STOCK ----------
+  async loadStock(silent){
+    if(!silent || !this.stockData.length) $('#stockList').innerHTML='<div class="cargando">Cargando stock…</div>';
+    try{
+      const data=await selAll(()=>sb.from('unidades').select('sku,fabricada_at').eq('estado','stock'),['id']);
+      const now=Date.now(), madms=this.mad*86400000, g={};
+      (data||[]).forEach(u=>{
+        const b=g[u.sku]||(g[u.sku]={sku:u.sku,disp:0,madur:0});
+        const f=u.fabricada_at?new Date(u.fabricada_at).getTime():0;
+        if(f && now-f>=madms) b.disp++; else b.madur++;
+      });
+      this.stockData=Object.values(g).sort((a,b)=>a.sku.localeCompare(b.sku));
+      this.renderStock();
+    }catch(e){ if(!silent) toast('Error stock: '+e.message,'err'); }
+  },
+  renderStock(){
+    const q=($('#stockSearch').value||'').toLowerCase().trim();
+    let arr=this.stockData;
+    if(q) arr=arr.filter(b=>b.sku.toLowerCase().includes(q)||(this.prodMap[b.sku]||'').toLowerCase().includes(q));
+    $('#stockList').innerHTML=arr.map(b=>{
+      const nom=this.prodMap[b.sku]||b.sku, tot=b.disp+b.madur;
+      return `<div class="urow">
+        <div style="min-width:0"><div class="uid" style="font-family:var(--sans);font-size:17px">${esc(nom)}</div><div class="usub">${esc(b.sku)}</div></div>
+        <div style="text-align:right">
+          <div style="font-family:var(--mono);font-size:26px;font-weight:700">${tot}</div>
+          <div><span class="stat-chip" style="background:#F7E8E0;color:#8F4222">Disp ${b.disp}</span><span class="stat-chip" style="background:#E1EAEF;color:#3C6375">Mad ${b.madur}</span></div>
+        </div></div>`;
+    }).join('')||'<div class="vacio">Sin stock.</div>';
+  },
+
+  // ---------- PUESTOS (ritmo y estado en vivo) ----------
+  async loadOperarios(silent){
+    if(!silent || !this._ops) $('#opsList').innerHTML='<div class="cargando">Cargando puestos…</div>';
+    if(this.mad==null){ try{ const {data:cfg}=await sb.from('config').select('maduracion').eq('id',1).single(); if(cfg&&cfg.maduracion!=null) this.mad=cfg.maduracion; }catch(e){} }
+    try{
+      const hoy=new Date(); hoy.setHours(0,0,0,0); const hIso=hoy.toISOString();
+      const {data:ops}=await sb.from('puestos_trabajo').select('id,nombre').eq('activo',true).order('nombre');
+      const evs=await selAll(()=>sb.from('fabricacion_eventos').select('unidad_id,ot,sku,puesto_id,tipo,ts').gte('ts',hIso),['ts','unidad_id','tipo']);
+      const {data:pars}=await sb.from('paradas').select('puesto_id,motivo,inicio,fin').gte('inicio',hIso);
+      const {data:turs}=await sb.from('turnos').select('puesto_id,inicio,fin').gte('inicio',hIso);
+      const now=Date.now();
+      this._ops=(ops||[]).map(o=>{
+        const evO=(evs||[]).filter(e=>e.puesto_id===o.id);
+        const byU={}; evO.forEach(e=>{(byU[e.unidad_id]=byU[e.unidad_id]||[]).push(e);});
+        let enCurso=[], hechas=0, durs=[];
+        for(const uid in byU){
+          const a=byU[uid].sort((x,y)=>new Date(x.ts)-new Date(y.ts));
+          const inis=a.filter(x=>x.tipo==='inicio'), fins=a.filter(x=>x.tipo==='fin');
+          fins.forEach((f,i)=>{ hechas++; const ini=inis[i]; if(ini){const d=(new Date(f.ts)-new Date(ini.ts))/1000; if(d>0&&d<86400)durs.push(d);} });
+          if(inis.length>fins.length){ const li=inis[inis.length-1]; enCurso.push({sku:li.sku,ot:li.ot,uid,start:new Date(li.ts).getTime()}); }
+        }
+        const paroAct=(pars||[]).find(p=>p.puesto_id===o.id && !p.fin);
+        const parosHoy=(pars||[]).filter(p=>p.puesto_id===o.id);
+        const media=durs.length?durs.reduce((a,b)=>a+b,0)/durs.length:0;
+        const uxh=media?Math.round(3600/media):0;
+        const turno=(turs||[]).filter(t=>t.puesto_id===o.id).sort((a,b)=>new Date(b.inicio)-new Date(a.inicio))[0];
+        let turnoDur=0, prodSeg=0, ocup=null, turnoAbierto=false;
+        if(turno){
+          const ini=new Date(turno.inicio).getTime();
+          const finT=turno.fin? new Date(turno.fin).getTime(): now;
+          turnoAbierto=!turno.fin;
+          turnoDur=(finT-ini)/1000;
+          let ps=parosHoy.filter(p=>new Date(p.inicio).getTime()>=ini)
+            .reduce((a,p)=>a+((p.fin?new Date(p.fin).getTime():now)-new Date(p.inicio).getTime())/1000,0);
+          prodSeg=Math.max(0,turnoDur-ps);
+          ocup=turnoDur>0?Math.round(prodSeg/turnoDur*100):0;
+        }
+        return {o,enCurso,hechas,media,uxh,paroAct,parosHoy,turnoDur,prodSeg,ocup,turnoAbierto};
+      });
+      this.renderOperarios();
+    }catch(e){ if(!silent || !this._ops) $('#opsList').innerHTML='<div class="vacio">Error: '+esc(e.message)+'</div>'; }
+  },
+  renderOperarios(){
+    if(!this._ops||!this._ops.length){ $('#opsList').innerHTML='<div class="vacio">Sin puestos.</div>'; return; }
+    $('#opsList').innerHTML=this._ops.map((x,xi)=>{
+      const st = x.paroAct ? `<span class="badge par">${esc(x.paroAct.motivo)}</span>`
+               : x.enCurso.length ? `<span class="badge act">Fabricando</span>`
+               : `<span class="badge off">Sin turno</span>`;
+      const cur = x.enCurso.map((c,ci)=>`<span class="stat-chip" style="background:#F7E8E0;color:#8F4222;cursor:pointer" onclick="Enc.verUnidad(${xi},${ci})">${esc(this.prodMap[c.sku]||c.sku)} · <span data-crono="${c.start}">0:00</span></span>`).join('');
+      const parInfo = x.parosHoy.length? `${x.parosHoy.length} paradas`:'sin paradas';
+      const turnoInfo = x.turnoDur? `Turno <b>${fmtHM(x.turnoDur)}</b>${x.turnoAbierto?'':' (cerrado)'} · Ocupación ${x.ocup}% · ${parInfo}`:'Sin turno abierto';
+      return `<div class="op-card ${x.paroAct?'paro':''}">
+        <div class="op-head"><div class="op-name">${esc(x.o.nombre)}</div>${st}</div>
+        <div class="usub">Hechas hoy <b>${x.hechas}</b> · ${x.uxh} uds/h · media ${x.media?fmtDur(x.media):'—'}<br>${turnoInfo}</div>
+        ${cur?`<div style="margin-top:9px">${cur}</div>`:''}
+      </div>`;
+    }).join('');
+  },
+  verUnidad(xi,ci){
+    const x=this._ops[xi]; if(!x) return; const c=x.enCurso[ci]; if(!c) return;
+    const nom=this.prodMap[c.sku]||c.sku;
+    const ini=new Date(c.start);
+    const mad=Number(this.mad||0);
+    const dispo=new Date(c.start); dispo.setDate(dispo.getDate()+mad);
+    const fH=d=>d.toLocaleTimeString('es-ES',{hour:'2-digit',minute:'2-digit'});
+    const fD=d=>d.toLocaleDateString('es-ES',{weekday:'long',day:'2-digit',month:'long'});
+    $('#opModalBx').innerHTML=`
+      <button class="mclose" onclick="Enc.cerrarDetalle()">${ICO.x}</button>
+      <h3 style="margin:0 0 2px">${esc(nom)}</h3>
+      <div class="usub" style="margin-bottom:14px;color:var(--muted)">${esc(x.o.nombre)} · fabricando</div>
+      <div class="det-row"><span class="k">Orden (OT)</span><span class="v">${esc(c.ot||'—')}</span></div>
+      <div class="det-row"><span class="k">Hora de inicio</span><span class="v">${fH(ini)}</span></div>
+      <div class="det-row"><span class="k">Maduración</span><span class="v">${mad} día${mad===1?'':'s'}</span></div>
+      <div class="det-row"><span class="k">Disponible (aprox.)</span><span class="v">${fD(dispo)}</span></div>
+      <div class="usub" style="margin-top:14px;font-size:14px;line-height:1.5;color:var(--muted)">La disponibilidad es una estimación (inicio + maduración). Se confirmará al terminar la fabricación.</div>`;
+    $('#opModal').classList.add('on');
+  },
+  cerrarDetalle(){ $('#opModal').classList.remove('on'); },
+  tick(){
+    if(this.sec==='operarios'){
+      document.querySelectorAll('#opsList [data-crono]').forEach(el=>{
+        el.textContent=fmtDur((Date.now()-Number(el.dataset.crono))/1000);
+      });
+    }
+  },
+
+  // ---------- INVENTARIO ----------
+  setTipo(t){
+    this.ajTipo=t;
+    $('#tipoAlta').classList.toggle('on',t==='alta'); $('#tipoBaja').classList.toggle('on',t==='baja'); $('#tipoOT').classList.toggle('on',t==='ot');
+    $('#ajMadurWrap').style.display=t==='alta'?'':'none';
+    $('#ajNuc').style.display=t==='ot'?'none':'';
+    $('#ajOTWrap').style.display=t==='ot'?'':'none';
+    $('#ajCantLbl').textContent=t==='ot'?'etiquetas que sobran':'uds';
+    if(t==='ot') this.loadOTs();
+  },
+  // OT abiertas para el desplegable de "OT: salieron menos"
+  async loadOTs(){
+    try{
+      const {data}=await sb.from('ordenes').select('ot,sku,nombre,cantidad').eq('estado','abierta').order('ot',{ascending:false}).limit(300);
+      this.otMap={}; (data||[]).forEach(o=>this.otMap[o.ot]=o);
+      $('#otList').innerHTML=(data||[]).map(o=>`<option value="${esc(o.ot)}">${esc(this.prodMap[o.sku]||o.sku)} · ${o.cantidad} uds</option>`).join('');
+    }catch(e){}
+  },
+  // desde "Partes": prepara la petición de esa OT (sobran etiquetas / salió una de más)
+  pedirDesdeOT(btn,tipo){
+    const ot=btn.dataset.ot, sku=btn.dataset.sku;
+    this.go('inventario'); this.setTipo(tipo);
+    if(tipo==='ot'){ $('#ajOT').value=ot; }
+    else{ $('#ajNuc').value=sku; $('#ajMadur').checked=true; $('#ajNota').value='Salió de más en '+ot; }
+    $('#ajCant').value='1'; $('#ajCant').focus();
+  },
+  async enviarAjuste(){
+    if(this.ajTipo==='ot') return this.enviarAjusteOT();
+    const sku=$('#ajNuc').value.trim().toUpperCase();
+    const cant=parseInt($('#ajCant').value)||0;
+    if(!sku || !this.prodMap[sku]){ toast('Elige un núcleo válido','err'); return; }
+    if(cant<1){ toast('Cantidad no válida','err'); return; }
+    const row={sku, tipo:this.ajTipo, cantidad:cant, madurar:this.ajTipo==='alta'?$('#ajMadur').checked:false,
+               estado:'pendiente', solicitado_por:this.user.id, nota:$('#ajNota').value.trim()||null};
+    try{
+      const {error}=await sb.from('ajustes_inventario').insert(row);
+      if(error) throw error;
+      toast('Enviado a oficina','ok');
+      $('#ajNuc').value='';$('#ajCant').value='1';$('#ajNota').value='';$('#ajMadur').checked=false;
+      this.loadAjustes();
+    }catch(e){ toast('Error: '+e.message,'err'); }
+  },
+  // petición a oficina: en esta OT salieron menos núcleos y sobran etiquetas
+  async enviarAjusteOT(){
+    const ot=$('#ajOT').value.trim().toUpperCase();
+    const cant=parseInt($('#ajCant').value)||0;
+    if(!ot){ toast('Escribe la OT','err'); return; }
+    if(cant<1){ toast('Cantidad no válida','err'); return; }
+    try{
+      let o=this.otMap&&this.otMap[ot];
+      if(!o){ const {data}=await sb.from('ordenes').select('ot,sku,cantidad,estado').eq('ot',ot).maybeSingle(); o=data; }
+      if(!o){ toast('Esa OT no existe','err'); return; }
+      const row={sku:o.sku, tipo:'ot_menos', ot, cantidad:cant, madurar:false,
+                 estado:'pendiente', solicitado_por:this.user.id, nota:$('#ajNota').value.trim()||null};
+      const {error}=await sb.from('ajustes_inventario').insert(row);
+      if(error) throw new Error(/\bot\b|column/i.test(error.message)?'falta ejecutar peticiones_ot.sql en Supabase ('+error.message+')':error.message);
+      toast('Enviado a oficina','ok');
+      $('#ajOT').value='';$('#ajCant').value='1';$('#ajNota').value='';
+      this.loadAjustes();
+    }catch(e){ toast('Error: '+e.message,'err'); }
+  },
+  async loadAjustes(){
+    try{
+      const {data}=await sb.from('ajustes_inventario').select('*').eq('solicitado_por',this.user.id).order('created_at',{ascending:false}).limit(30);
+      const arr=data||[];
+      $('#ajVacio').classList.toggle('hidden', arr.length>0);
+      $('#ajList').innerHTML=arr.map(a=>{
+        const nom=this.prodMap[a.sku]||a.sku;
+        const est=a.estado==='aprobado'?'aprob':a.estado==='rechazado'?'rech':'pend';
+        if(a.tipo==='ot_menos') return `<div class="aj-card">
+          <div style="min-width:0"><div class="uid" style="display:flex;align-items:center;gap:8px"><span style="display:inline-flex;width:19px;height:19px;color:var(--terra)">${ICO.down}</span>${esc(a.ot||'OT')} · sobran ${a.cantidad} etiqueta${a.cantidad==1?'':'s'}</div>
+          <div class="usub" style="color:var(--muted);font-size:14px">${esc(nom)}${a.nota?' · '+esc(a.nota):''}</div></div>
+          <span class="aj-est ${est}">${esc(a.estado)}</span></div>`;
+        const ico=a.tipo==='alta'?ICO.up:ICO.down;
+        return `<div class="aj-card">
+          <div style="min-width:0"><div class="uid" style="display:flex;align-items:center;gap:8px"><span style="display:inline-flex;width:19px;height:19px;color:${a.tipo==='alta'?'var(--green)':'var(--red)'}">${ico}</span>${a.tipo==='alta'?'Alta':'Baja'} · ${a.cantidad} uds</div>
+          <div class="usub" style="color:var(--muted);font-size:14px">${esc(nom)}${a.nota?' · '+esc(a.nota):''}</div></div>
+          <span class="aj-est ${est}">${esc(a.estado)}</span></div>`;
+      }).join('');
+    }catch(e){ $('#ajList').innerHTML='<div class="vacio">Error: '+esc(e.message)+'</div>'; }
+  },
+
+  // ---------- PARTES ----------
+  // una OT con sus botones para pedir ajustes a oficina
+  filaOT(o,conEstado){
+    const est=conEstado?` · <b>${esc(o.estado||'')}</b>${o.lanzada_at?' · '+new Date(o.lanzada_at).toLocaleDateString('es-ES'):''}`:'';
+    return `<div class="urow" style="flex-wrap:wrap"><div style="min-width:0;flex:1"><div class="uid">${esc(o.ot)} · ${esc(o.sku)}</div><div class="usub">${esc(o.nombre||'')}${est}</div></div><div style="font-family:var(--mono);font-weight:700;font-size:24px">${o.cantidad}</div>
+      ${String(o.ot).startsWith('OTINV')?'':`<div style="display:flex;gap:8px;width:100%"><button class="btn-ghost sm" style="flex:1;font-size:15px" data-ot="${esc(o.ot)}" data-sku="${esc(o.sku)}" onclick="Enc.pedirDesdeOT(this,'ot')">Sobran etiquetas</button><button class="btn-ghost sm" style="flex:1;font-size:15px" data-ot="${esc(o.ot)}" data-sku="${esc(o.sku)}" onclick="Enc.pedirDesdeOT(this,'alta')">Salió de más</button></div>`}</div>`;
+  },
+  // busca OT por número o núcleo, sin importar el día en que se lanzó
+  async buscarOT(){
+    const q=$('#parteBuscar').value.trim().toUpperCase();
+    if(!q){ $('#parteBusq').innerHTML=''; return; }
+    try{
+      const pat='%'+q.replace(/[%,()]/g,'')+'%';
+      const {data,error}=await sb.from('ordenes').select('ot,sku,nombre,cantidad,estado,lanzada_at').or(`ot.ilike.${pat},sku.ilike.${pat}`).order('ot',{ascending:false}).limit(20);
+      if(error) throw error;
+      $('#parteBusq').innerHTML=(data&&data.length)?data.map(o=>this.filaOT(o,true)).join(''):'<div class="vacio">No hay ninguna OT con "'+esc(q)+'".</div>';
+    }catch(e){ toast('Error buscando: '+e.message,'err'); }
+  },
+  async loadPartes(){
+    const f=$('#parteFecha').value; if(!f) return;
+    const ini=new Date(f+'T00:00:00'); const fin=new Date(f+'T23:59:59.999');
+    const iIso=ini.toISOString(), fIso=fin.toISOString();
+    try{
+      const {data:ords}=await sb.from('ordenes').select('ot,sku,nombre,cantidad,lanzada_at').gte('lanzada_at',iIso).lte('lanzada_at',fIso).order('ot');
+      const oarr=ords||[];
+      $('#parteLanzVacio').classList.toggle('hidden', oarr.length>0);
+      $('#parteLanz').innerHTML=oarr.map(o=>this.filaOT(o)).join('');
+
+      const evs=await selAll(()=>sb.from('fabricacion_eventos').select('sku,tipo,ts').eq('tipo','fin').gte('ts',iIso).lte('ts',fIso),['ts','unidad_id']);
+      const cons=await selAll(()=>sb.from('unidades').select('sku,consumida_at').gte('consumida_at',iIso).lte('consumida_at',fIso),['id']);
+      const g={};
+      (evs||[]).forEach(e=>{(g[e.sku]=g[e.sku]||{sku:e.sku,fab:0,con:0}).fab++;});
+      (cons||[]).forEach(c=>{(g[c.sku]=g[c.sku]||{sku:c.sku,fab:0,con:0}).con++;});
+      const marr=Object.values(g).sort((a,b)=>a.sku.localeCompare(b.sku));
+      $('#parteMovVacio').classList.toggle('hidden', marr.length>0);
+      $('#parteMov').innerHTML=marr.map(m=>{
+        const nom=this.prodMap[m.sku]||m.sku;
+        return `<div class="urow"><div style="min-width:0"><div class="uid" style="font-family:var(--sans);font-size:17px">${esc(nom)}</div><div class="usub">${esc(m.sku)}</div></div>
+          <div style="text-align:right"><span class="stat-chip" style="background:#DFEEE3;color:#1F5A31">Fabr ${m.fab}</span><span class="stat-chip" style="background:#F8E2DC;color:#B23A22">Cons ${m.con}</span></div></div>`;
+      }).join('');
+    }catch(e){ toast('Error partes: '+e.message,'err'); }
+  },
+
+  // ---------- LOTES por programa ----------
+  async loadLotes(){
+    $('#lotesList').innerHTML='<div class="cargando">Cargando programas…</div>';
+    try{
+      const {data:prods}=await sb.from('productos').select('sku,descripcion');
+      const progs=[...new Set((prods||[]).map(p=>{ const m=(p.descripcion||'').match(/\s*(N\d+)/); return m?m[1]:null; }).filter(Boolean))]
+        .sort((a,b)=>a.length-b.length||a.localeCompare(b));
+      let lotes={};
+      try{ const {data:lt}=await sb.from('lotes_programa').select('programa,lote'); (lt||[]).forEach(r=>lotes[r.programa]=r.lote); }catch(e){}
+      const nombres={N001:'Extra Firm',N002:'040',N003:'030',N004:'V50',N005:'Medium',N006:'V65/32',N007:'V65/40',N008:'V80 Soft',N009:'V80/40',N010:'Abatible',N011:'Kids',N012:'Articulado'};
+      $('#lotesList').innerHTML=progs.map(p=>{
+        const val=lotes[p]!=null?lotes[p]:10;
+        const nom=nombres[p]||'';
+        return `<div class="urow"><div style="min-width:0"><div class="uid">${esc(p)}</div><div class="usub">${esc(nom)}</div></div>
+          <input type="number" min="1" max="9999" value="${val}" data-prog="${esc(p)}" class="loteInput" style="width:104px;padding:0 10px;border:2px solid var(--border);border-radius:var(--r-sm);text-align:center"></div>`;
+      }).join('');
+      if(!progs.length) $('#lotesList').innerHTML='<div class="vacio">No hay programas en el catálogo.</div>';
+    }catch(e){ $('#lotesList').innerHTML='<div class="vacio">Error: '+esc(e.message)+'</div>'; }
+  },
+  async saveLotes(){
+    const filas=[...document.querySelectorAll('#lotesList .loteInput')].map(i=>({programa:i.dataset.prog, lote:Math.max(1,parseInt(i.value)||10)}));
+    if(!filas.length) return;
+    try{
+      const {error}=await sb.from('lotes_programa').upsert(filas,{onConflict:'programa'});
+      if(error) throw error;
+      toast('Lotes guardados','ok');
+    }catch(e){ toast('Error al guardar: '+(e.message||e),'err'); }
+  },
+
+  // ---------- cámara ----------
+  async toggleCam(){
+    if(this.camOn){ await this.stopCam(); return; }
+    $('#readerC').innerHTML='';
+    try{
+      this.cam=new Html5Qrcode('readerC',{verbose:false});
+      const cfg={fps:10,qrbox:{width:230,height:230},aspectRatio:1.0};
+      const onScan=txt=>{ const now=Date.now(); if(txt===this.lastScan.code && now-this.lastScan.t<3000) return; this.lastScan={code:txt,t:now}; this.addCart(txt); };
+      try{ await this.cam.start({facingMode:'environment'},cfg,onScan,()=>{}); }
+      catch(e1){ const cams=await Html5Qrcode.getCameras(); if(cams&&cams.length){ await this.cam.start(cams[cams.length-1].id,cfg,onScan,()=>{}); } else throw e1; }
+      this.camOn=true; $('#camBtnC').innerHTML=ICO.camOff+'Apagar';
+    }catch(e){ toast('No se pudo abrir la cámara: '+(e.message||e),'err'); $('#readerC').innerHTML=''; }
+  },
+  async stopCam(){
+    try{ if(this.cam){ await this.cam.stop(); this.cam.clear(); } }catch(e){}
+    this.camOn=false; this.cam=null; $('#camBtnC').innerHTML=ICO.cam+'Cámara'; $('#readerC').innerHTML='';
+  }
+};
+
+function fmtClock(d){
+  let dia=d.toLocaleDateString('es-ES',{weekday:'short',day:'2-digit',month:'short'});
+  dia=dia.replace('.','');
+  dia=dia.charAt(0).toUpperCase()+dia.slice(1);
+  const hora=d.toLocaleTimeString('es-ES',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
+  return dia+' · '+hora;
+}
+function tickClock(){ const el=$('#clockTxt'); if(el) el.textContent=fmtClock(new Date()); }
+tickClock();
+setInterval(tickClock,1000);
+
+Q.load();
+setInterval(()=>Q.flush(), 15000);
+Login.init();
+// permite abrir la app sin conexión (ver sw.js). Solo en HTTPS (GitHub Pages).
+if('serviceWorker' in navigator && location.protocol==='https:'){
+  window.addEventListener('load',()=>navigator.serviceWorker.register('sw.js').catch(()=>{}));
+}
+</script>
+</body>
+</html>
