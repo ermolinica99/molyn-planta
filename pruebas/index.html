@@ -687,8 +687,11 @@ const Q = {
       const {error}=await q; if(error) throw error;
     }
     else if(op.t==='consumir_reserva'){
-      const {data}=await sb.from('reservas').select('id,cantidad').eq('sku',op.sku).eq('estado','pendiente').order('created_at').order('id').limit(1);
-      const r=data&&data[0]; if(!r) return;
+      // en el pegado se sabe para qué modelo es: primero su reserva, si no la más antigua del sku
+      let r=null;
+      if(op.sku_pf){ const {data}=await sb.from('reservas').select('id,cantidad').eq('sku',op.sku).eq('sku_pf',op.sku_pf).eq('estado','pendiente').order('created_at').order('id').limit(1); r=data&&data[0]; }
+      if(!r){ const {data}=await sb.from('reservas').select('id,cantidad').eq('sku',op.sku).eq('estado','pendiente').order('created_at').order('id').limit(1); r=data&&data[0]; }
+      if(!r) return;
       if(r.cantidad>1){ const {error}=await sb.from('reservas').update({cantidad:r.cantidad-1}).eq('id',r.id); if(error) throw error; }
       else { const {error}=await sb.from('reservas').update({estado:'consumida'}).eq('id',r.id); if(error) throw error; }
     }
@@ -771,12 +774,21 @@ const Est={
 function tipoDe(sku){ sku=String(sku||''); return sku.endsWith('_TAPA')?'tapa':(sku.endsWith('_PTB')?'platabanda':'nucleo'); }
 // fila de lotes_programa con el tiempo teórico de un sku: la de su fase (tapa, platabanda, pegado,
 // cosido, embalaje → <modelo>_TAPA/_PTB/_PEG/_COS/_EMB) o, si es núcleo, la de su programa N001…
+// PRODUCTO FINAL: cada colchón (etiqueta PF00001-0001) pasa por 3 Pegado → 2 Cosido → 1 Embalado.
+// "fase" es la operación que le toca; sus tiempos se guardan con el código <modelo>_PEG/_COS/_EMB.
+const PF_FASE={
+  pegado:{suf:'_PEG',clave:'PEG',txt:'3 · Pegado',sig:'cosido',col:'pegado_at'},
+  cosido:{suf:'_COS',clave:'COS',txt:'2 · Cosido',sig:'embalaje',col:'cosido_at'},
+  embalaje:{suf:'_EMB',clave:'EMB',txt:'1 · Embalado',sig:'terminado',col:'embalado_at'}};
+const PF_SIG_TXT={cosido:'2 · Cosido',embalaje:'1 · Embalado',terminado:'terminado'};
+const esPF=code=>/^PF\d+-\d+$/.test(String(code||''));
+function faseDeSkuPF(sku){ sku=String(sku||''); return Object.keys(PF_FASE).find(k=>sku.endsWith(PF_FASE[k].suf))||null; }
 function claveTiempoDe(sku){ const m=String(sku||'').match(/_(TAPA|PTB|PEG|COS|EMB)$/); return m?m[1]:progDe(sku); }
 
 function qInsert(table,payload){ Q.enqueue({t:'insert',table,payload}); }
 function qUpdate(table,match,payload){ Q.enqueue({t:'update',table,match,payload}); }
 function qDelete(table,match){ Q.enqueue({t:'delete',table,match}); }
-function qConsumirReserva(sku){ if(sku) Q.enqueue({t:'consumir_reserva',sku}); }
+function qConsumirReserva(sku,sku_pf){ if(sku) Q.enqueue(sku_pf?{t:'consumir_reserva',sku,sku_pf}:{t:'consumir_reserva',sku}); }
 
 const Cache={
   set(k,v){ try{ localStorage.setItem('molyn_c_'+k, JSON.stringify(v)); }catch(e){} },
@@ -966,15 +978,16 @@ const Op = {
   paro:null, paroInicio:null, prodMap:{}, cam:null, camOn:false,
   lastScan:{code:null, t:0}, ticking:false,
   turno:null, turnoInicio:null, paradasSeg:0, paradasSesion:[], cfg:{descanso_min:60}, stdSku:{}, provisional:new Set(),
-  lastActivityTs:null,
+  lastActivityTs:null, misFasesPF:new Set(), mad:2,
 
   async init(u){
     this.user=u;
     this.pintarIconos();
     const cfg=await readCached('config', async()=>{
-      const {data}=await sb.from('config').select('descanso_min,hora_inicio,hora_fin,umbral_semanal,dias_historico').eq('id',1).single(); return data;
+      const {data}=await sb.from('config').select('descanso_min,hora_inicio,hora_fin,umbral_semanal,dias_historico,maduracion').eq('id',1).single(); return data;
     });
     if(cfg) this.cfg=Object.assign(this.cfg,cfg);
+    if(cfg && cfg.maduracion!=null) this.mad=Number(cfg.maduracion)||0;
     const prods=await readCached('productos', async()=>{
       const {data}=await sb.from('productos').select('sku,nombre'); return data;
     });
@@ -987,8 +1000,10 @@ const Op = {
     (ts||[]).forEach(t=>{ this.stdSku[t.sku]=Number(t.mediana_seg); if(t.semana===semActual) this.provisional.add(t.sku); });
     this.tiempoTeoricoPrograma={};
     try{
-      const {data:lp}=await sb.from('lotes_programa').select('programa,tiempo_teorico_seg');
+      const lp=await readCached('lotes_prog', async()=>{ const {data}=await sb.from('lotes_programa').select('programa,tiempo_teorico_seg,puesto_id'); return data; });
       (lp||[]).forEach(r=>{ if(r.tiempo_teorico_seg) this.tiempoTeoricoPrograma[r.programa]=r.tiempo_teorico_seg; });
+      // fases de producto final asignadas a este puesto (Oficina → Ajustes → Lotes). Sin asignar: puede hacer todas.
+      this.misFasesPF=new Set(Object.keys(PF_FASE).filter(k=>(lp||[]).some(r=>r.programa===PF_FASE[k].clave && r.puesto_id!=null && String(r.puesto_id)===String(this.user.id))));
     }catch(e){}
     await this.comprobarTurno();
     this.loadSerie();
@@ -1175,6 +1190,7 @@ const Op = {
       if(pq.length && !this.paro && pq[pq.length-1].payload.inicio>=inicioHoyIso()){ const p=pq[pq.length-1].payload; this.paro={motivo:p.motivo,inicio:p.inicio}; this.paroInicio=new Date(p.inicio).getTime(); this.mostrarParo(); }
     }catch(e){}
     if(this.serie && this.serie.marker){ this.enCurso.delete(this.serie.marker); }
+    await this.completarPF();
   },
 
   async comprobarParadaActiva(){
@@ -1199,9 +1215,111 @@ const Op = {
     }
     if(this.serie){ toast('Tienes un lote en curso. Ciérralo con los botones.','err'); beep(false); return; }
     this.markActivity();
+    if(esPF(code)) return this.scanPF(code);
+    // con un pegado abierto al que le faltan piezas, lo que se escanea es su núcleo, tapa o platabanda
+    if(this.pegadosIncompletos().length) return this.scanComponente(code);
     if(this.enCurso.has(code)){ return this.finalizar(code); }
     return this.iniciar(code);
   },
+
+  // ---------- PRODUCTO FINAL (colchón en línea) ----------
+  savePF(){ try{ const m={}; this.enCurso.forEach((it,k)=>{ if(it.pf) m[k]=it.pf; }); localStorage.setItem('molyn_pf_'+this.user.id, JSON.stringify(m)); }catch(e){} },
+  loadPFguardado(){ try{ return JSON.parse(localStorage.getItem('molyn_pf_'+this.user.id)||'{}')||{}; }catch(e){ return {}; } },
+  // tras recargar la tablet: recupera de qué fase es cada colchón en curso y las piezas ya escaneadas
+  async completarPF(){
+    const guard=this.loadPFguardado();
+    for(const [code,it] of this.enCurso){
+      if(!esPF(code) || it.pf) continue;
+      if(guard[code]){ it.pf=guard[code]; continue; }
+      const fase=faseDeSkuPF(it.sku); if(!fase) continue;
+      it.pf={fase, sku_pf:String(it.sku).slice(0,-PF_FASE[fase].suf.length), nombre:'', sku_nucleo:null, comps:{}, sinDatos:true};
+      try{ const {data:od}=await sb.from('pf_ordenes').select('nombre,descripcion,sku_nucleo').eq('pf',it.ot).limit(1);
+        if(od&&od[0]){ it.pf.nombre=od[0].descripcion||od[0].nombre||''; it.pf.sku_nucleo=od[0].sku_nucleo; delete it.pf.sinDatos; } }catch(e){}
+    }
+    this.savePF(); this.render();
+  },
+  necesita(it){ const p=it.pf||{}; return {nucleo:p.sku_nucleo||null, tapa:p.sku_pf+'_TAPA', platabanda:p.sku_pf+'_PTB'}; },
+  faltan(it){ const n=this.necesita(it), c=(it.pf&&it.pf.comps)||{}; return ['nucleo','tapa','platabanda'].filter(k=>n[k] && !c[k]); },
+  pegadosIncompletos(){ return [...this.enCurso.values()].filter(it=>it.pf && it.pf.fase==='pegado' && this.faltan(it).length); },
+  async scanPF(code){
+    if(this.enCurso.has(code)) return this.finalizarPF(code);
+    let u=null, o=null;
+    try{
+      const {data,error}=await sb.from('pf_unidades').select('id,pf,sku_pf,fase').eq('id',code).limit(1); if(error) throw error;
+      u=data&&data[0];
+      if(u){ const {data:od}=await sb.from('pf_ordenes').select('pf,nombre,descripcion,sku_nucleo,estado').eq('pf',u.pf).limit(1); o=od&&od[0]; }
+    }catch(e){ toast('Sin conexión: para empezar un colchón hace falta conexión','err'); beep(false); return; }
+    if(!u){ toast('Colchón no reconocido: '+code,'err'); beep(false); return; }
+    if(u.fase==='terminado'){ toast(code+' ya está embalado','err'); beep(false); return; }
+    if(u.fase==='anulada' || (o&&o.estado==='anulada')){ toast(code+' está anulado','err'); beep(false); return; }
+    const fi=PF_FASE[u.fase]; if(!fi){ toast('Estado desconocido: '+u.fase,'err'); beep(false); return; }
+    if(this.misFasesPF.size && !this.misFasesPF.has(u.fase)){
+      toast(code+' está pendiente de '+fi.txt+'. Tu puesto hace '+[...this.misFasesPF].map(k=>PF_FASE[k].txt).join(', ')+'.','err'); beep(false); return;
+    }
+    const start=Date.now(), ts=new Date(start).toISOString();
+    const it={unidad_id:code, ot:u.pf, sku:u.sku_pf+fi.suf, start, ts,
+      pf:{fase:u.fase, sku_pf:u.sku_pf, nombre:(o&&(o.descripcion||o.nombre))||u.sku_pf, sku_nucleo:o?o.sku_nucleo:null, comps:{}}};
+    this.enCurso.set(code,it); this.savePF();
+    qInsert('fabricacion_eventos',{unidad_id:code,ot:u.pf,sku:it.sku,puesto_id:this.user.id,tipo:'inicio',ts});
+    toast(code+' · empieza '+fi.txt+(u.fase==='pegado'?'. Escanea '+this.faltan(it).map(k=>({nucleo:'núcleo',tapa:'tapa',platabanda:'platabanda'})[k]).join(', '):''),'ok'); beep(true);
+    this.render();
+  },
+  async scanComponente(code){
+    if([...this.enCurso.values()].some(it=>it.pf&&it.pf.comps&&Object.values(it.pf.comps).some(c=>c.id===code))){ toast(code+' ya está escaneado','err'); beep(false); return; }
+    let u=null;
+    try{ const {data,error}=await sb.from('unidades').select('id,sku,estado,fabricada_at').eq('id',code).limit(1); if(error) throw error; u=data&&data[0]; }
+    catch(e){ toast('Sin conexión: no se puede comprobar '+code,'err'); beep(false); return; }
+    const peg=this.pegadosIncompletos();
+    const esperado=peg.map(it=>it.unidad_id+': '+this.faltan(it).map(k=>this.necesita(it)[k]).join(', ')).join(' · ');
+    if(!u){ toast('Código no reconocido: '+code+'. Falta: '+esperado,'err'); beep(false); return; }
+    if(u.estado!=='stock'){ toast(code+(u.estado==='pendiente'?' aún no está fabricado':' no se puede usar ('+u.estado+')'),'err'); beep(false); return; }
+    const tipo=tipoDe(u.sku);
+    const cand=peg.find(it=>this.faltan(it).includes(tipo) && this.necesita(it)[tipo]===u.sku);
+    if(!cand){ toast(code+' es '+u.sku+' y no corresponde. Falta: '+esperado,'err'); beep(false); return; }
+    if(tipo==='nucleo' && u.fabricada_at){
+      const dispo=new Date(u.fabricada_at).getTime()+this.mad*86400000;
+      if(Date.now()<dispo && !confirm('⚠️ '+code+' todavía está en MADURACIÓN (disponible el '+new Date(dispo).toLocaleDateString('es-ES')+').\n\n¿Usarlo igualmente?')){ beep(false); return; }
+    }
+    cand.pf.comps[tipo]={id:code, sku:u.sku};
+    this.savePF();
+    const quedan=this.faltan(cand);
+    toast(code+' → '+cand.unidad_id+(quedan.length?' · falta '+quedan.map(k=>({nucleo:'núcleo',tapa:'tapa',platabanda:'platabanda'})[k]).join(', '):' · piezas completas'),'ok'); beep(true);
+    this.render();
+  },
+  async finalizarPF(code){
+    const it=this.enCurso.get(code); if(!it) return;
+    if(!it.pf) await this.completarPF();
+    const p=it.pf||{fase:faseDeSkuPF(it.sku),comps:{}};
+    const fi=PF_FASE[p.fase]; if(!fi){ toast('No se sabe en qué fase está '+code,'err'); return; }
+    if(p.fase==='pegado'){
+      const falta=this.faltan(it);
+      if(falta.length && !confirm('Falta escanear: '+falta.map(k=>this.necesita(it)[k]).join(', ')+'.\n\n¿Terminar el pegado igualmente? Esas piezas no se descontarán del stock.')) return;
+    }
+    this.enCurso.delete(code); // antes del await: un doble toque no debe registrar dos "fin"
+    const ts=new Date().toISOString(), finMs=new Date(ts).getTime();
+    const retra=await this.retrabajosDe(new Date(it.start).toISOString(), ts);
+    const seg=Math.max(0,(finMs-it.start)/1000 - solaparSeg(it.start,finMs,retra));
+    qInsert('fabricacion_eventos',{unidad_id:code,ot:it.ot,sku:it.sku,puesto_id:this.user.id,tipo:'fin',ts});
+    const patch={fase:fi.sig}; patch[fi.col]=ts;
+    if(p.fase==='pegado'){
+      const c=p.comps||{};
+      patch.nucleo_id=c.nucleo?c.nucleo.id:null; patch.tapa_id=c.tapa?c.tapa.id:null; patch.platabanda_id=c.platabanda?c.platabanda.id:null;
+      Object.values(c).forEach(x=>{
+        qUpdate('unidades',{id:x.id,estado:'stock'},{estado:'consumida',consumida_at:ts});
+        qConsumirReserva(x.sku,p.sku_pf);
+      });
+    }
+    // solo avanza si sigue en esta fase (si otro puesto ya la hizo, no se pisa)
+    qUpdate('pf_unidades',{id:code,fase:p.fase},patch);
+    this.hechasHoy++; this.duracionesHoy.push(seg);
+    this.ultimas.unshift({unidad_id:code,sku:it.sku,seg,txt:fi.txt}); this.ultimas=this.ultimas.slice(0,10);
+    toast(code+' · '+fi.txt+' terminado ('+fmtDur(seg)+') → '+PF_SIG_TXT[fi.sig],'ok'); beep(true,true);
+    this.savePF(); this.markActivity();
+    if(this.stdSku[it.sku]===undefined || this.provisional.has(it.sku)) this.aprenderTiempo(it.sku);
+    this.autoPreparacion();
+    this.render();
+  },
+  quitarComp(code,tipo){ const it=this.enCurso.get(code); if(it&&it.pf&&it.pf.comps){ delete it.pf.comps[tipo]; this.savePF(); this.render(); } },
   async iniciar(code){
     let u=null, notFound=false;
     try{
@@ -1290,6 +1408,7 @@ const Op = {
   async finalizar(code){
     const it=this.enCurso.get(code);
     if(!it) return;
+    if(esPF(code)) return this.finalizarPF(code);
     this.enCurso.delete(code); // ya, antes del await: un doble toque no debe registrar dos "fin"
     const ts=new Date().toISOString();
     const finMs=new Date(ts).getTime();
@@ -1628,13 +1747,24 @@ const Op = {
     const cont=$('#enCurso'); const arr=[...this.enCurso.values()];
     $('#enCursoVacio').classList.toggle('hidden', arr.length>0);
     cont.innerHTML=arr.map(it=>{
-      const nom=this.prodMap[it.sku]||it.sku;
+      const nom=this.prodMap[it.sku]||(it.pf&&it.pf.nombre)||it.sku;
+      const pfHtml=it.pf?(()=>{
+        const fi=PF_FASE[it.pf.fase]||{txt:''};
+        let h=`<div class="usub" style="margin-top:2px"><b style="color:var(--terra)">${esc(fi.txt)}</b> · ${esc(it.ot)}</div>`;
+        if(it.pf.fase==='pegado'){
+          const n=this.necesita(it), c=it.pf.comps||{};
+          h+=`<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:5px">`+['nucleo','tapa','platabanda'].filter(k=>n[k]).map(k=>{
+            const ok=c[k], lab={nucleo:'Núcleo',tapa:'Tapa',platabanda:'Platabanda'}[k];
+            return `<span style="font-size:12px;padding:3px 8px;border-radius:6px;${ok?'background:#E4EDE6;color:var(--green)':'background:#F7EDDF;color:#8a5a1e'}">${ok?'✓':'○'} ${lab}: ${esc(ok?c[k].id:n[k])}${ok?` <a href="#" style="color:inherit" onclick="event.preventDefault();Op.quitarComp('${esc(it.unidad_id)}','${k}')">✕</a>`:''}</span>`;
+          }).join('')+(it.pf.sku_nucleo?'':'<span style="font-size:12px;color:var(--muted)">sin núcleo</span>')+`</div>`;
+        }
+        return h; })():'';
       const std=this.stdSku[it.sku]||this.tiempoDefaultDe(it.sku);
       const refTxt = this.stdSku[it.sku]? `ref. ${fmtDur(std)}` : `teórico ${fmtDur(std)}`;
       return `<div class="urow curso" id="row_${cssId(it.unidad_id)}">
         <div style="flex:1;min-width:0">
           <div class="uid">${esc(it.unidad_id)}</div>
-          <div class="usub">${esc(nom)} · <span class="ref">${refTxt}</span></div>
+          <div class="usub">${esc(nom)} · <span class="ref">${refTxt}</span></div>${pfHtml}
           <div class="prog"><i id="p_${cssId(it.unidad_id)}"></i></div>
         </div>
         <div style="display:flex;align-items:center;gap:10px">
@@ -1647,7 +1777,7 @@ const Op = {
     $('#ultimas').innerHTML=this.ultimas.map(u=>{
       const nom=this.prodMap[u.sku]||u.sku;
       return `<div class="urow done">
-        <div style="min-width:0"><div class="uid">${esc(u.unidad_id)}</div><div class="usub">${esc(nom)}</div></div>
+        <div style="min-width:0"><div class="uid">${esc(u.unidad_id)}</div><div class="usub">${esc(nom)}${u.txt?' · '+esc(u.txt):''}</div></div>
         <div class="crono" style="display:flex;align-items:center;gap:7px"><span style="display:inline-flex;width:19px;height:19px">${ICO.check}</span>${fmtDur(u.seg)}</div></div>`;
     }).join('');
   }
