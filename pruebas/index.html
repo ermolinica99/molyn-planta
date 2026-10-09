@@ -767,6 +767,9 @@ const Est={
   }
 };
 
+// tipos de producto por su código: tapas (<modelo>_TAPA) y platabandas (<modelo>_PTB) no maduran
+function tipoDe(sku){ sku=String(sku||''); return sku.endsWith('_TAPA')?'tapa':(sku.endsWith('_PTB')?'platabanda':'nucleo'); }
+
 function qInsert(table,payload){ Q.enqueue({t:'insert',table,payload}); }
 function qUpdate(table,match,payload){ Q.enqueue({t:'update',table,match,payload}); }
 function qDelete(table,match){ Q.enqueue({t:'delete',table,match}); }
@@ -1737,7 +1740,7 @@ const Enc = {
     if(u){
       if(u.estado!=='stock'){ toast(u.estado==='pendiente'?'Aún no fabricada':'No consumible ('+u.estado+')','err'); beep(false); return; }
       if(u.fabricada_at){
-        const dispo=new Date(u.fabricada_at).getTime()+this.mad*86400000;
+        const dispo=new Date(u.fabricada_at).getTime()+(tipoDe(u.sku)==='nucleo'?this.mad:0)*86400000;
         if(Date.now()<dispo){
           const fFecha=new Date(dispo).toLocaleDateString('es-ES',{day:'2-digit',month:'2-digit',year:'numeric'});
           if(!confirm('⚠️ '+code+' todavía está en MADURACIÓN (disponible el '+fFecha+').\n\n¿Seguro que quieres consumirlo de todos modos?')){ beep(false); return; }
@@ -1783,7 +1786,7 @@ const Enc = {
       (data||[]).forEach(u=>{
         const b=g[u.sku]||(g[u.sku]={sku:u.sku,disp:0,madur:0});
         const f=u.fabricada_at?new Date(u.fabricada_at).getTime():0;
-        if(f && now-f>=madms) b.disp++; else b.madur++;
+        if(f && (tipoDe(u.sku)!=='nucleo' || now-f>=madms)) b.disp++; else b.madur++;
       });
       this.stockData=Object.values(g).sort((a,b)=>a.sku.localeCompare(b.sku));
       this.renderStock();
@@ -1866,7 +1869,7 @@ const Enc = {
     const x=this._ops[xi]; if(!x) return; const c=x.enCurso[ci]; if(!c) return;
     const nom=this.prodMap[c.sku]||c.sku;
     const ini=new Date(c.start);
-    const mad=Number(this.mad||0);
+    const mad=tipoDe(c.sku)==='nucleo'?Number(this.mad||0):0;
     const dispo=new Date(c.start); dispo.setDate(dispo.getDate()+mad);
     const fH=d=>d.toLocaleTimeString('es-ES',{hour:'2-digit',minute:'2-digit'});
     const fD=d=>d.toLocaleDateString('es-ES',{weekday:'long',day:'2-digit',month:'long'});
