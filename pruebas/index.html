@@ -767,8 +767,8 @@ const Est={
   }
 };
 
-// tipos de producto por su código: tapas (T-<modelo>) y platabandas (P-<modelo>) no maduran
-function tipoDe(sku){ sku=String(sku||''); return sku.startsWith('T-')?'tapa':(sku.startsWith('P-')?'platabanda':'nucleo'); }
+// tipos de producto por su código: tapas (<modelo>_TAPA) y platabandas (<modelo>_PTB) no maduran
+function tipoDe(sku){ sku=String(sku||''); return sku.endsWith('_TAPA')?'tapa':(sku.endsWith('_PTB')?'platabanda':'nucleo'); }
 
 function qInsert(table,payload){ Q.enqueue({t:'insert',table,payload}); }
 function qUpdate(table,match,payload){ Q.enqueue({t:'update',table,match,payload}); }
