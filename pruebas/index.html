@@ -535,6 +535,10 @@ input,.uid,.det-row .v{-webkit-user-select:text;user-select:text}
 
     <!-- CONSUMO -->
     <section id="secConsumo" class="enc-sec">
+      <div class="subnav" id="consModo" style="margin-bottom:10px">
+        <button class="on" onclick="Enc.setModo('consumo')">Consumo de núcleos</button>
+        <button onclick="Enc.setModo('expedir')">Expedición de colchones</button>
+      </div>
       <div class="scan-card">
         <div id="readerC"></div>
         <div class="scan-row">
@@ -545,7 +549,7 @@ input,.uid,.det-row .v{-webkit-user-select:text;user-select:text}
           <button id="camBtnC" class="btn-ghost" onclick="Enc.toggleCam()"></button>
         </div>
       </div>
-      <h3 class="sec">Por consumir <span id="cartCount" class="pill-count">0</span></h3>
+      <h3 class="sec"><span id="cartTit">Por consumir</span> <span id="cartCount" class="pill-count">0</span></h3>
       <div id="cartList" class="lista"></div>
       <div id="cartVacio" class="vacio">Escanea núcleos para añadirlos al consumo.</div>
       <button id="btnAceptar" class="btn-ink full" onclick="Enc.aceptarConsumo()" disabled>Aceptar consumo</button>
@@ -690,6 +694,21 @@ const Q = {
       const {error}=await q; if(error) throw error;
     }
     else if(op.t==='consumir_reserva'){ await consumirReservaDB(op); }
+    else if(op.t==='pf_defecto'){
+      // colchón defectuoso: vuelve a una fase anterior (retrabajo) o se da de baja. Solo si sigue en la
+      // fase en la que se marcó. Se apunta la incidencia (con el puesto que hizo la fase o la pieza del
+      // fallo) y, en la baja, vuelven al stock las piezas que sirven. Se puede repetir sin duplicar.
+      const {data:cur,error:e0}=await sb.from('pf_unidades').select('fase,nucleo_id,tapa_id,platabanda_id').eq('id',op.id).maybeSingle(); if(e0) throw e0;
+      if(!cur || cur.fase!==op.fase) return;
+      const culpable=op.puesto_culpable!=null?op.puesto_culpable:await puestoCulpable(op.id,op.sku_pf,op.fallo_en,cur);
+      const inc={pf_unidad:op.id,pf:op.pf,sku_pf:op.sku_pf,accion:op.accion,fase_detectada:op.fase,fase_destino:op.accion==='retrabajo'?op.fase_destino:null,
+        fallo_en:op.fallo_en,puesto_culpable:culpable,puesto_detecta:op.puesto_detecta,origen:'tablet',motivo:op.motivo||null,
+        piezas_recuperadas:(op.recuperar||[]).join(',')||null,ref:op.ref,created_at:op.ts};
+      const {error:e1}=await sb.from('pf_incidencias').insert(inc); if(e1 && e1.code!=='23505') throw e1;
+      if(op.recuperar&&op.recuperar.length){ const {error}=await sb.from('unidades').update({estado:'stock',consumida_at:null}).in('id',op.recuperar).eq('estado','consumida'); if(error) throw error; }
+      const patch=op.accion==='baja'?{fase:'baja',baja_at:op.ts}:{fase:op.fase_destino};
+      const {error:e2}=await sb.from('pf_unidades').update(patch).eq('id',op.id).eq('fase',op.fase); if(e2) throw e2;
+    }
     else if(op.t==='pf_paso'){
       // un colchón termina una fase. Solo si sigue en esa fase (si otro puesto ya la hizo o Oficina lo
       // anuló, no se toca nada). En el pegado se consumen sus piezas: cada una solo si sigue en stock,
@@ -797,6 +816,17 @@ function qInsert(table,payload){ Q.enqueue({t:'insert',table,payload}); }
 function qUpdate(table,match,payload){ Q.enqueue({t:'update',table,match,payload}); }
 function qDelete(table,match){ Q.enqueue({t:'delete',table,match}); }
 function qConsumirReserva(sku,sku_pf,pf,ot){ if(sku) Q.enqueue({t:'consumir_reserva',sku,sku_pf:sku_pf||null,pf:pf||null,ot:ot||null}); }
+// puesto que hizo la fase (o fabricó la pieza) donde está el fallo de un colchón: el último "fin" registrado
+const SUF_FASE={pegado:'_PEG',cosido:'_COS',embalaje:'_EMB'};
+async function puestoCulpable(id,sku_pf,fallo_en,cur){
+  let uid=id, sku=null;
+  if(SUF_FASE[fallo_en]) sku=sku_pf+SUF_FASE[fallo_en];
+  else { uid=cur&&cur[{nucleo:'nucleo_id',tapa:'tapa_id',platabanda:'platabanda_id'}[fallo_en]]; if(!uid) return null; }
+  let q=sb.from('fabricacion_eventos').select('puesto_id').eq('unidad_id',uid).eq('tipo','fin').order('ts',{ascending:false}).limit(1);
+  if(sku) q=q.eq('sku',sku);
+  const {data,error}=await q; if(error) throw error;
+  return data&&data[0]?data[0].puesto_id:null;
+}
 // descuenta 1 de la reserva que corresponde: la de esa PF; si no, la de ese modelo (de la misma OT si
 // se puede); sin modelo (consumo manual), la de esa OT o la más antigua del sku. Si la base de datos no
 // responde, lanza error para que la operación siga en la cola (antes se daba por hecha y se perdía).
@@ -1302,13 +1332,14 @@ const Op = {
     if(this.pendienteEnCola(code)){ toast(code+' tiene un paso sin enviar. Espera a que se sincronice.','err'); beep(false); return; }
     let u=null, o=null;
     try{
-      const {data,error}=await sb.from('pf_unidades').select('id,pf,sku_pf,fase').eq('id',code).limit(1); if(error) throw error;
+      const {data,error}=await sb.from('pf_unidades').select('id,pf,sku_pf,fase,nucleo_id,tapa_id,platabanda_id').eq('id',code).limit(1); if(error) throw error;
       u=data&&data[0];
       if(u){ const {data:od}=await sb.from('pf_ordenes').select('pf,nombre,descripcion,sku_nucleo,estado').eq('pf',u.pf).limit(1); o=od&&od[0]; }
     }catch(e){ toast('Sin conexión: para empezar un colchón hace falta conexión','err'); beep(false); return; }
     if(!u){ toast('Colchón no reconocido: '+code,'err'); beep(false); return; }
     if(u.fase==='terminado'){ toast(code+' ya está embalado','err'); beep(false); return; }
     if(u.fase==='anulada' || (o&&o.estado==='anulada')){ toast(code+' está anulado','err'); beep(false); return; }
+    if(u.fase==='baja'){ toast(code+' está dado de baja (defectuoso)','err'); beep(false); return; }
     const fi=PF_FASE[u.fase]; if(!fi){ toast('Estado desconocido: '+u.fase,'err'); beep(false); return; }
     if(this.misFasesPF.size && !this.misFasesPF.has(u.fase)){
       toast(code+' está pendiente de '+fi.txt+'. Tu puesto hace '+[...this.misFasesPF].map(k=>PF_FASE[k].txt).join(', ')+'.','err'); beep(false); return;
@@ -1316,6 +1347,10 @@ const Op = {
     const start=Date.now(), ts=new Date(start).toISOString();
     const it={unidad_id:code, ot:u.pf, sku:u.sku_pf+fi.suf, start, ts,
       pf:{fase:u.fase, sku_pf:u.sku_pf, nombre:(o&&(o.descripcion||o.nombre))||u.sku_pf, sku_nucleo:o?o.sku_nucleo:null, comps:{}}};
+    // repegado (volvió por un defecto): ya tiene sus piezas puestas; se dan por escaneadas (se pueden quitar
+    // con ✕ y escanear otra si alguna no sirve)
+    if(u.fase==='pegado'){ const n=this.necesita(it);
+      [['nucleo','nucleo_id'],['tapa','tapa_id'],['platabanda','platabanda_id']].forEach(([k,c])=>{ if(u[c] && n[k]) it.pf.comps[k]={id:u[c],sku:n[k],ot:null,puesta:true}; }); }
     this.enCurso.set(code,it); this.savePF(); this.pfUlt[code]={t:Date.now(),a:'inicio'};
     qInsert('fabricacion_eventos',{unidad_id:code,ot:u.pf,sku:it.sku,puesto_id:this.user.id,tipo:'inicio',ts});
     toast(code+' · empieza '+fi.txt+(u.fase==='pegado'?'. Escanea '+this.faltan(it).map(k=>({nucleo:'núcleo',tapa:'tapa',platabanda:'platabanda'})[k]).join(', '):''),'ok'); beep(true);
@@ -1376,6 +1411,57 @@ const Op = {
     this.savePF(); this.markActivity();
     if(this.stdSku[it.sku]===undefined || this.provisional.has(it.sku)) this.aprenderTiempo(it.sku);
     this.autoPreparacion();
+    this.render();
+  },
+  // ---------- colchón defectuoso ----------
+  async defecto(code){
+    const it=this.enCurso.get(code); if(!it||!it.pf) return;
+    const p=it.pf, orden=['pegado','cosido','embalaje'], idx=orden.indexOf(p.fase);
+    let piezas={};
+    try{ const {data}=await sb.from('pf_unidades').select('nucleo_id,tapa_id,platabanda_id').eq('id',code).maybeSingle(); piezas=data||{}; }catch(e){}
+    const anteriores=orden.slice(0,idx);   // fases ya hechas (a las que puede volver)
+    const fallos=[...anteriores, ...(['nucleo','tapa','platabanda'].filter(k=>piezas[k+'_id']))];
+    const txtF={pegado:'3 · Pegado',cosido:'2 · Cosido',embalaje:'1 · Embalado',nucleo:'Núcleo',tapa:'Tapa',platabanda:'Platabanda'};
+    this._def={code,anteriores,piezas};
+    let m=$('#defModal'); if(!m){ m=document.createElement('div'); m.id='defModal'; m.className='modal-ov'; m.onclick=e=>{ if(e.target===m) m.classList.remove('on'); }; document.body.appendChild(m); }
+    const radio=(name,val,txt,chk)=>`<label style="display:flex;gap:10px;align-items:center;padding:10px 12px;border:2px solid var(--border);border-radius:12px;margin-bottom:8px;font-weight:600"><input type="radio" name="${name}" value="${val}" ${chk?'checked':''} style="width:22px;height:22px"> ${txt}</label>`;
+    m.innerHTML=`<div class="modal-bx" style="max-height:90vh;overflow:auto">
+      <button class="mclose" onclick="$('#defModal').classList.remove('on')">${ICO.x}</button>
+      <h3>Colchón defectuoso</h3><div class="usub" style="margin:4px 0 14px">${esc(code)} · ahora en ${esc(txtF[p.fase]||p.fase)}</div>
+      <div class="usub" style="font-weight:700;margin-bottom:6px">¿Qué se hace con él?</div>
+      ${anteriores.map((f,i)=>radio('defAcc','ret:'+f,'Volver a '+txtF[f]+' (rehacer)',i===anteriores.length-1)).join('')}
+      ${radio('defAcc','baja','Dar de baja (se tira)',!anteriores.length)}
+      <div class="usub" style="font-weight:700;margin:12px 0 6px">¿Dónde está el fallo?</div>
+      ${fallos.length?fallos.map((f,i)=>radio('defFallo',f,txtF[f]+(SUF_FASE[f]?'':' (pieza)'),i===anteriores.length-1||(!anteriores.length&&i===0))).join(''):'<div class="usub">Sin fases anteriores ni piezas registradas</div>'}
+      <div id="defRecup" style="margin-top:10px"></div>
+      <input id="defMotivo" class="buscar" placeholder="Motivo (p. ej. mal pegado, arrugas, mancha…)" style="margin-top:10px">
+      <button class="btn-ink full" style="margin-top:14px;background:var(--red)" onclick="Op.confirmarDefecto()">Confirmar</button>
+    </div>`;
+    const pintarRec=()=>{ const acc=(m.querySelector('input[name=defAcc]:checked')||{}).value;
+      const ids=['nucleo','tapa','platabanda'].filter(k=>piezas[k+'_id']);
+      $('#defRecup').innerHTML=acc==='baja'&&ids.length?'<div class="usub" style="font-weight:700;margin-bottom:6px">Piezas que todavía sirven (vuelven al stock)</div>'+ids.map(k=>`<label style="display:flex;gap:10px;align-items:center;padding:6px 0"><input type="checkbox" class="defRec" value="${esc(piezas[k+'_id'])}" style="width:22px;height:22px"> ${txtF[k]} · ${esc(piezas[k+'_id'])}</label>`).join(''):''; };
+    m.querySelectorAll('input[name=defAcc]').forEach(r=>r.onchange=pintarRec); pintarRec();
+    m.classList.add('on');
+  },
+  confirmarDefecto(){
+    const d=this._def; if(!d) return; const it=this.enCurso.get(d.code); if(!it||!it.pf) return;
+    const m=$('#defModal');
+    const acc=(m.querySelector('input[name=defAcc]:checked')||{}).value;
+    const fallo=(m.querySelector('input[name=defFallo]:checked')||{}).value;
+    if(!acc){ toast('Elige qué se hace con el colchón','err'); return; }
+    if(!fallo){ toast('Indica dónde está el fallo','err'); return; }
+    const recuperar=acc==='baja'?[...m.querySelectorAll('.defRec:checked')].map(c=>c.value):[];
+    const ts=new Date().toISOString();
+    // la fase que tenía empezada no cuenta: se quita su inicio
+    Q.dropInsert('fabricacion_eventos', pl=>pl.unidad_id===d.code && pl.tipo==='inicio' && pl.ts===it.ts);
+    qDelete('fabricacion_eventos',{unidad_id:d.code, tipo:'inicio', ts:it.ts});
+    Q.enqueue({t:'pf_defecto',id:d.code,fase:it.pf.fase,accion:acc==='baja'?'baja':'retrabajo',fase_destino:acc.startsWith('ret:')?acc.slice(4):null,
+      fallo_en:fallo,recuperar,motivo:($('#defMotivo').value||'').trim()||null,puesto_detecta:this.user.id,sku_pf:it.pf.sku_pf,pf:it.ot,ts,
+      ref:'T'+this.user.id+'-'+Date.now()+'-'+Math.random().toString(36).slice(2,7)});
+    this.enCurso.delete(d.code); this.savePF();
+    this.pfUlt=this.pfUlt||{}; this.pfUlt[d.code]={t:Date.now(),a:'fin'};
+    m.classList.remove('on');
+    toast(d.code+(acc==='baja'?' dado de baja':' vuelve a '+({pegado:'3 · Pegado',cosido:'2 · Cosido'}[acc.slice(4)]||acc.slice(4))),'ok'); beep(true);
     this.render();
   },
   quitarComp(code,tipo){ const it=this.enCurso.get(code); if(it&&it.pf&&it.pf.comps){ delete it.pf.comps[tipo]; this.savePF(); this.render(); } },
@@ -1811,6 +1897,7 @@ const Op = {
       const pfHtml=it.pf?(()=>{
         const fi=PF_FASE[it.pf.fase]||{txt:''};
         let h=`<div class="usub" style="margin-top:2px"><b style="color:var(--terra)">${esc(fi.txt)}</b> · ${esc(it.ot)}</div>`;
+        h+=`<button class="btn-ghost sm" style="margin-top:6px;color:var(--red);border-color:var(--red)" data-uid="${esc(it.unidad_id)}" onclick="Op.defecto(this.dataset.uid)">⚠ Defectuoso</button>`;
         if(it.pf.fase==='pegado'){
           const n=this.necesita(it), c=it.pf.comps||{};
           h+=`<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:5px">`+['nucleo','tapa','platabanda'].filter(k=>n[k]).map(k=>{
@@ -1931,9 +2018,31 @@ const Enc = {
 
   // ---------- CONSUMO ----------
   manualConsumo(){ const c=$('#manualC').value.trim().toUpperCase(); if(c){ $('#manualC').value=''; this.addCart(c); } },
+  modo:'consumo',
+  setModo(m){
+    if(this.cart.size && !confirm('Se vacía la lista actual. ¿Seguir?')) return;
+    this.modo=m; this.cart.clear();
+    document.querySelectorAll('#consModo button').forEach((b,i)=>b.classList.toggle('on',(i===0)===(m==='consumo')));
+    $('#cartTit').textContent=m==='expedir'?'Para expedir':'Por consumir';
+    $('#cartVacio').textContent=m==='expedir'?'Escanea las etiquetas de los colchones que se cargan.':'Escanea núcleos para añadirlos al consumo.';
+    this.renderCart();
+  },
+  // expedición: colchones embalados (stock de producto terminado) que salen en una carga
+  async addExp(code){
+    if(!esPF(code)){ toast('Eso no es una etiqueta de colchón (PF…)','err'); beep(false); return; }
+    let u=null;
+    try{ const {data,error}=await sb.from('pf_unidades').select('id,pf,sku_pf,fase,expedido_at').eq('id',code).maybeSingle(); if(error) throw error; u=data; }
+    catch(e){ toast('Sin conexión: no se puede comprobar '+code,'err'); beep(false); return; }
+    if(!u){ toast('Colchón no reconocido: '+code,'err'); beep(false); return; }
+    if(u.expedido_at){ toast(code+' ya se expidió el '+new Date(u.expedido_at).toLocaleDateString('es-ES'),'err'); beep(false); return; }
+    if(u.fase!=='terminado'){ toast(code+' aún no está embalado ('+u.fase+')','err'); beep(false); return; }
+    this.cart.set(code,{unidad_id:code,ot:u.pf,sku:u.sku_pf,nombre:u.sku_pf});
+    beep(true); this.renderCart();
+  },
   async addCart(code){
     code=String(code).trim().toUpperCase();
     if(this.cart.has(code)){ toast('Ya está en la lista','err'); return; }
+    if(this.modo==='expedir') return this.addExp(code);
     let u=null, notFound=false;
     try{ const {data,error}=await sb.from('unidades').select('id,ot,sku,estado,fabricada_at').eq('id',code).limit(1); if(error) throw error; if(data&&data.length) u=data[0]; else notFound=true; }
     catch(e){ u=null; }
@@ -1959,7 +2068,8 @@ const Enc = {
     $('#cartCount').textContent=arr.length;
     $('#cartVacio').classList.toggle('hidden', arr.length>0);
     $('#btnAceptar').disabled=arr.length===0;
-    $('#btnAceptar').textContent=arr.length? `Aceptar consumo (${arr.length})`:'Aceptar consumo';
+    const verbo=this.modo==='expedir'?'Expedir':'Aceptar consumo';
+    $('#btnAceptar').textContent=arr.length? `${verbo} (${arr.length})`:verbo;
     $('#cartList').innerHTML=arr.map(it=>`<div class="urow">
       <div style="min-width:0"><div class="uid">${esc(it.unidad_id)}</div><div class="usub">${esc(it.nombre)} · ${esc(it.ot)}</div></div>
       <button class="btn-ghost sm" data-uid="${esc(it.unidad_id)}" onclick="Enc.removeCart(this.dataset.uid)">${ICO.x}</button></div>`).join('');
@@ -1967,6 +2077,14 @@ const Enc = {
   async aceptarConsumo(){
     const arr=[...this.cart.values()];
     if(!arr.length) return;
+    if(this.modo==='expedir'){
+      const ref=prompt(`Expedir ${arr.length} colchón(es).\n\nReferencia de la carga (albarán, cliente, matrícula…), opcional:`,'');
+      if(ref===null) return;
+      const now=new Date().toISOString();
+      for(const it of arr) qUpdate('pf_unidades',{id:it.unidad_id,fase:'terminado',expedido_at:null},{expedido_at:now,expedicion:ref.trim()||null});
+      toast(arr.length+' colchón(es) expedidos','ok'); beep(true,true);
+      this.cart.clear(); this.renderCart(); return;
+    }
     if(!confirm(`¿Consumir ${arr.length} núcleos?`)) return;
     const now=new Date().toISOString();
     for(const it of arr){
