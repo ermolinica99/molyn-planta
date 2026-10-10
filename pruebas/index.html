@@ -577,7 +577,7 @@ input,.uid,.det-row .v{-webkit-user-select:text;user-select:text}
           <datalist id="otList"></datalist>
           <div class="vacio" style="padding:0 0 12px;text-align:left">Pon cuántas etiquetas de esa OT han sobrado porque salieron menos núcleos. Oficina quitará esas unidades de la OT.</div>
         </div>
-        <input id="ajNuc" class="buscar" placeholder="Núcleo (SKU)…" list="nucList" autocomplete="off">
+        <input id="ajNuc" class="buscar" placeholder="Núcleo, tapa o platabanda (código)…" list="nucList" autocomplete="off" oninput="Enc.sugerir()">
         <datalist id="nucList"></datalist>
         <div class="frow">
           <input id="ajCant" type="number" min="1" value="1" class="buscar" style="max-width:130px;margin-bottom:0">
@@ -1833,7 +1833,8 @@ const Enc = {
     try{
       const prods=await selProductos('sku,nombre');
       (prods||[]).forEach(p=>this.prodMap[p.sku]=p.nombre);
-      // la lista de sugerencias solo con núcleos (con tapas y platabandas serían miles de opciones en la tablet)
+      // sugerencias: al empezar, los núcleos; al escribir, lo que coincida (núcleos, tapas y platabandas).
+      // Con tapas y platabandas son miles de productos: meterlos todos en la lista frena la tablet.
       $('#nucList').innerHTML=(prods||[]).filter(p=>tipoDe(p.sku)==='nucleo').map(p=>`<option value="${esc(p.sku)}">${esc(p.nombre)}</option>`).join('');
     }catch(e){}
     $('#parteFecha').value=ymdLocal(new Date());
@@ -1871,6 +1872,12 @@ const Enc = {
     if(fn) this._secTimer=setInterval(fn,this.sec==='stock'?15000:5000);
   },
   stopAutoSec(){ if(this._secTimer){ clearInterval(this._secTimer); this._secTimer=null; } },
+
+  sugerir(){
+    const q=($('#ajNuc').value||'').trim().toUpperCase(); if(q.length<2) return;
+    const out=[]; for(const sku in this.prodMap){ if(sku.includes(q) || String(this.prodMap[sku]||'').toUpperCase().includes(q)){ out.push(sku); if(out.length>=40) break; } }
+    $('#nucList').innerHTML=out.map(sku=>`<option value="${esc(sku)}">${esc(this.prodMap[sku]||'')}</option>`).join('');
+  },
 
   // ---------- CONSUMO ----------
   manualConsumo(){ const c=$('#manualC').value.trim().toUpperCase(); if(c){ $('#manualC').value=''; this.addCart(c); } },
@@ -2067,7 +2074,7 @@ const Enc = {
     if(this.ajTipo==='ot') return this.enviarAjusteOT();
     const sku=$('#ajNuc').value.trim().toUpperCase();
     const cant=parseInt($('#ajCant').value)||0;
-    if(!sku || !this.prodMap[sku]){ toast('Elige un núcleo válido','err'); return; }
+    if(!sku || !this.prodMap[sku]){ toast('Ese código no existe (núcleo, tapa o platabanda)','err'); return; }
     if(cant<1){ toast('Cantidad no válida','err'); return; }
     const row={sku, tipo:this.ajTipo, cantidad:cant, madurar:this.ajTipo==='alta'?$('#ajMadur').checked:false,
                estado:'pendiente', solicitado_por:this.user.id, nota:$('#ajNota').value.trim()||null};
