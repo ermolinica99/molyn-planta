@@ -11,7 +11,10 @@
 //  con el prefijo "pruebas:" (la app real y la de pruebas comparten dirección y si no se
 //  mezclarían la sesión, la cola sin enviar y la caché) y muestra una franja roja.
 // ============================================================
-const ES_PRUEBAS=/\/pruebas\//.test(location.pathname);
+// Esta copia es la de PRUEBAS: siempre usa la base de datos de pruebas, se abra desde donde se abra
+// (antes dependía de que la dirección tuviera /pruebas/; servida desde otra ruta habría usado la real).
+// Al pasarla a la app real se vuelve a poner: const ES_PRUEBAS=/\/pruebas\//.test(location.pathname);
+const ES_PRUEBAS=true;
 if(ES_PRUEBAS){
   ['getItem','setItem','removeItem'].forEach(m=>{ const o=Storage.prototype[m]; Storage.prototype[m]=function(k,...a){ return o.call(this,'pruebas:'+k,...a); }; });
   document.title='[PRUEBAS] '+document.title;
@@ -686,14 +689,18 @@ const Q = {
       for(const k in op.match){ const v=op.match[k]; if(v===null) q=q.is(k,null); else q=q.eq(k,v); }
       const {error}=await q; if(error) throw error;
     }
-    else if(op.t==='consumir_reserva'){
-      // en el pegado se sabe para qué modelo es: primero su reserva, si no la más antigua del sku
-      let r=null;
-      if(op.sku_pf){ const {data}=await sb.from('reservas').select('id,cantidad').eq('sku',op.sku).eq('sku_pf',op.sku_pf).eq('estado','pendiente').order('created_at').order('id').limit(1); r=data&&data[0]; }
-      if(!r){ const {data}=await sb.from('reservas').select('id,cantidad').eq('sku',op.sku).eq('estado','pendiente').order('created_at').order('id').limit(1); r=data&&data[0]; }
-      if(!r) return;
-      if(r.cantidad>1){ const {error}=await sb.from('reservas').update({cantidad:r.cantidad-1}).eq('id',r.id); if(error) throw error; }
-      else { const {error}=await sb.from('reservas').update({estado:'consumida'}).eq('id',r.id); if(error) throw error; }
+    else if(op.t==='consumir_reserva'){ await consumirReservaDB(op); }
+    else if(op.t==='pf_paso'){
+      // un colchón termina una fase. Solo si sigue en esa fase (si otro puesto ya la hizo o Oficina lo
+      // anuló, no se toca nada). En el pegado se consumen sus piezas: cada una solo si sigue en stock,
+      // y entonces se descuenta su reserva. Se puede repetir sin consumir dos veces.
+      const {data:cur,error:e0}=await sb.from('pf_unidades').select('fase').eq('id',op.id).maybeSingle(); if(e0) throw e0;
+      if(!cur || cur.fase!==op.fase) return;
+      for(const c of (op.comps||[])){
+        const {data:u,error:e1}=await sb.from('unidades').update({estado:'consumida',consumida_at:op.ts}).eq('id',c.id).eq('estado','stock').select('id'); if(e1) throw e1;
+        if(u&&u.length) await consumirReservaDB({sku:c.sku,sku_pf:op.sku_pf,pf:op.pf,ot:c.ot});
+      }
+      const {error:e2}=await sb.from('pf_unidades').update(op.patch).eq('id',op.id).eq('fase',op.fase); if(e2) throw e2;
     }
   },
   dropInsert(table, matchFn){ this.items=this.items.filter(op=>!(op.t==='insert'&&op.table===table&&matchFn(op.payload))); this.save(); },
@@ -704,16 +711,17 @@ const Q = {
     let ok=0, fail=0;
     while(this.items.length){
       const op=this.items[0];
-      try{ await this.exec(op); this.items.shift(); this.save(); ok++; }
+      const quitar=()=>{ this.items=this.items.filter(o=>o._id!==op._id); this.save(); };
+      try{ await this.exec(op); quitar(); ok++; }
       catch(e){
         const msg=(e&&e.message)||String(e);
         // clave duplicada al insertar: el envío anterior sí llegó a la base de datos aunque se
         // perdiera la respuesta (corte de red). Ya está guardado, así que se da por enviado.
-        if(op.t==='insert' && e && e.code==='23505'){ this.items.shift(); this.save(); ok++; continue; }
+        if(op.t==='insert' && e && e.code==='23505'){ quitar(); ok++; continue; }
         if(/Failed to fetch|NetworkError|network|fetch|timeout|Load failed/i.test(msg)){ break; }
         op._attempts=(op._attempts||0)+1;
         if(op._attempts>=5){
-          this.items.shift();
+          this.items=this.items.filter(o=>o._id!==op._id);
           this.failed.push(Object.assign({},op,{_error:msg,_failedAt:new Date().toISOString()}));
           this.saveFailed();
           fail++;
@@ -788,7 +796,26 @@ function claveTiempoDe(sku){ const m=String(sku||'').match(/_(TAPA|PTB|PEG|COS|E
 function qInsert(table,payload){ Q.enqueue({t:'insert',table,payload}); }
 function qUpdate(table,match,payload){ Q.enqueue({t:'update',table,match,payload}); }
 function qDelete(table,match){ Q.enqueue({t:'delete',table,match}); }
-function qConsumirReserva(sku,sku_pf){ if(sku) Q.enqueue(sku_pf?{t:'consumir_reserva',sku,sku_pf}:{t:'consumir_reserva',sku}); }
+function qConsumirReserva(sku,sku_pf,pf,ot){ if(sku) Q.enqueue({t:'consumir_reserva',sku,sku_pf:sku_pf||null,pf:pf||null,ot:ot||null}); }
+// descuenta 1 de la reserva que corresponde: la de esa PF; si no, la de ese modelo (de la misma OT si
+// se puede); sin modelo (consumo manual), la de esa OT o la más antigua del sku. Si la base de datos no
+// responde, lanza error para que la operación siga en la cola (antes se daba por hecha y se perdía).
+async function consumirReservaDB(op){
+  const base=()=>sb.from('reservas').select('id,cantidad').eq('sku',op.sku).eq('estado','pendiente').order('created_at').order('id').limit(1);
+  const intentos=[];
+  if(op.pf) intentos.push(q=>q.eq('pf',op.pf));
+  if(op.sku_pf){ if(op.ot) intentos.push(q=>q.eq('sku_pf',op.sku_pf).eq('ot',op.ot)); intentos.push(q=>q.eq('sku_pf',op.sku_pf)); }
+  else { if(op.ot) intentos.push(q=>q.eq('ot',op.ot)); intentos.push(q=>q); }
+  let r=null;
+  for(const f of intentos){
+    const {data,error}=await f(base());
+    if(error){ if(/\bpf\b/.test(error.message||'')) continue; throw error; } // aún sin columna pf
+    if(data&&data[0]){ r=data[0]; break; }
+  }
+  if(!r) return;
+  if(r.cantidad>1){ const {error}=await sb.from('reservas').update({cantidad:r.cantidad-1}).eq('id',r.id); if(error) throw error; }
+  else { const {error}=await sb.from('reservas').update({estado:'consumida'}).eq('id',r.id); if(error) throw error; }
+}
 
 const Cache={
   set(k,v){ try{ localStorage.setItem('molyn_c_'+k, JSON.stringify(v)); }catch(e){} },
@@ -1159,6 +1186,7 @@ const Op = {
   async reconstruir(){
     // OJO: no tocar this.serie aquí — loadSerie() ya lo restauró de localStorage justo antes
     // de llamar a esta función, y machacarlo a null deshacía la recuperación del lote en curso
+    this._reconOk=false;
     this.enCurso.clear(); this.hechasHoy=0; this.duracionesHoy=[]; this.ultimas=[]; this.__algunas=false;
     try{
       // solo las últimas 2 semanas y paginado: antes traía TODO el historial del puesto y, al pasar
@@ -1186,7 +1214,8 @@ const Op = {
         });
       }
       this.ultimas=this.ultimas.slice(0,10);
-    }catch(e){ }
+      this._reconOk=true;
+    }catch(e){ this._reconOk=false; }
     try{
       const qev=Q.items.filter(o=>o.t==='insert'&&o.table==='fabricacion_eventos'&&o.payload.puesto_id===this.user.id);
       const inis=qev.filter(o=>o.payload.tipo==='inicio');
@@ -1200,6 +1229,8 @@ const Op = {
       if(pq.length && !this.paro && pq[pq.length-1].payload.inicio>=inicioHoyIso()){ const p=pq[pq.length-1].payload; this.paro={motivo:p.motivo,inicio:p.inicio}; this.paroInicio=new Date(p.inicio).getTime(); this.mostrarParo(); }
     }catch(e){}
     if(this.serie && this.serie.marker){ this.enCurso.delete(this.serie.marker); }
+    // lo que ya se terminó en esta tablet pero su "fin" aún no se ha enviado no está en curso
+    try{ Q.items.forEach(o=>{ if(o.t==='insert'&&o.table==='fabricacion_eventos'&&o.payload.tipo==='fin'){ const it=this.enCurso.get(o.payload.unidad_id); if(it && o.payload.ts>=it.ts && o.payload.sku===it.sku) this.enCurso.delete(o.payload.unidad_id); } }); }catch(e){}
     await this.completarPF();
   },
 
@@ -1223,36 +1254,52 @@ const Op = {
       if(this.paro.motivo==='Inactividad'||this.paro.motivo==='Preparación'){ await this.reanudar(true); }
       else { toast('Hay una parada activa. Reanuda para seguir.','err'); beep(false); return; }
     }
-    if(this.serie){ toast('Tienes un lote en curso. Ciérralo con los botones.','err'); beep(false); return; }
     this.markActivity();
+    // los colchones se pueden escanear aunque haya un lote de núcleos abierto
     if(esPF(code)) return this.scanPF(code);
-    // con un pegado abierto al que le faltan piezas, lo que se escanea es su núcleo, tapa o platabanda
-    if(this.pegadosIncompletos().length) return this.scanComponente(code);
+    if(this.serie){ toast('Tienes un lote en curso. Ciérralo con los botones.','err'); beep(false); return; }
     if(this.enCurso.has(code)){ return this.finalizar(code); }
+    // con un pegado abierto al que le faltan piezas, lo que se escanea es su núcleo, tapa o platabanda
+    // (si resulta ser una etiqueta por fabricar, se abre su lote como siempre)
+    if(this.pegadosIncompletos().length) return this.scanComponente(code);
     return this.iniciar(code);
   },
 
   // ---------- PRODUCTO FINAL (colchón en línea) ----------
-  savePF(){ try{ const m={}; this.enCurso.forEach((it,k)=>{ if(it.pf) m[k]=it.pf; }); localStorage.setItem('molyn_pf_'+this.user.id, JSON.stringify(m)); }catch(e){} },
+  savePF(){ try{ const m={}; this.enCurso.forEach((it,k)=>{ if(it.pf) m[k]=Object.assign({},it.pf,{_start:it.start,_ts:it.ts,_sku:it.sku,_ot:it.ot}); }); localStorage.setItem('molyn_pf_'+this.user.id, JSON.stringify(m)); }catch(e){} },
+  // ¿hay en la cola un paso de fase sin enviar para este colchón, o el consumo de esta pieza?
+  pendienteEnCola(code){ return Q.items.some(o=>(o.t==='pf_paso'&&(o.id===code||(o.comps||[]).some(c=>c.id===code)))||(o.t==='update'&&o.table==='unidades'&&o.match&&o.match.id===code)); },
   loadPFguardado(){ try{ return JSON.parse(localStorage.getItem('molyn_pf_'+this.user.id)||'{}')||{}; }catch(e){ return {}; } },
   // tras recargar la tablet: recupera de qué fase es cada colchón en curso y las piezas ya escaneadas
   async completarPF(){
     const guard=this.loadPFguardado();
+    // sin conexión al recargar no se han podido leer los colchones en curso del servidor: se recuperan
+    // de lo guardado en la tablet (y no se machaca lo guardado)
+    if(!this._reconOk){
+      for(const code in guard){ const g=guard[code]; if(!this.enCurso.has(code) && g && g._start && !Q.items.some(o=>o.t==='pf_paso'&&o.id===code&&o.fase===g.fase))
+        this.enCurso.set(code,{unidad_id:code,ot:g._ot,sku:g._sku,start:g._start,ts:g._ts,pf:g}); }
+    }
     for(const [code,it] of this.enCurso){
       if(!esPF(code) || it.pf) continue;
-      if(guard[code]){ it.pf=guard[code]; continue; }
+      if(guard[code] && guard[code].fase===faseDeSkuPF(it.sku)){ it.pf=guard[code]; continue; }
       const fase=faseDeSkuPF(it.sku); if(!fase) continue;
       it.pf={fase, sku_pf:String(it.sku).slice(0,-PF_FASE[fase].suf.length), nombre:'', sku_nucleo:null, comps:{}, sinDatos:true};
       try{ const {data:od}=await sb.from('pf_ordenes').select('nombre,descripcion,sku_nucleo').eq('pf',it.ot).limit(1);
         if(od&&od[0]){ it.pf.nombre=od[0].descripcion||od[0].nombre||''; it.pf.sku_nucleo=od[0].sku_nucleo; delete it.pf.sinDatos; } }catch(e){}
     }
-    this.savePF(); this.render();
+    if(this._reconOk) this.savePF(); this.render();
   },
   necesita(it){ const p=it.pf||{}; return {nucleo:p.sku_nucleo||null, tapa:p.sku_pf+'_TAPA', platabanda:p.sku_pf+'_PTB'}; },
   faltan(it){ const n=this.necesita(it), c=(it.pf&&it.pf.comps)||{}; return ['nucleo','tapa','platabanda'].filter(k=>n[k] && !c[k]); },
   pegadosIncompletos(){ return [...this.enCurso.values()].filter(it=>it.pf && it.pf.fase==='pegado' && this.faltan(it).length); },
   async scanPF(code){
-    if(this.enCurso.has(code)) return this.finalizarPF(code);
+    // una etiqueta que se queda delante de la cámara no debe empujar el colchón por todas las fases:
+    // tras empezar, no se termina por escaneo hasta pasados 10 s; tras terminar, se ignora 60 s
+    this.pfUlt=this.pfUlt||{};
+    const ult=this.pfUlt[code], ahora=Date.now();
+    if(ult && ahora-ult.t<(ult.a==='fin'?60000:10000)){ toast(code+(ult.a==='fin'?' acaba de terminar aquí':' acaba de empezar')+': escaneo ignorado','err'); beep(false); return; }
+    if(this.enCurso.has(code)){ this.pfUlt[code]={t:ahora,a:'fin'}; return this.finalizarPF(code); }
+    if(this.pendienteEnCola(code)){ toast(code+' tiene un paso sin enviar. Espera a que se sincronice.','err'); beep(false); return; }
     let u=null, o=null;
     try{
       const {data,error}=await sb.from('pf_unidades').select('id,pf,sku_pf,fase').eq('id',code).limit(1); if(error) throw error;
@@ -1269,16 +1316,19 @@ const Op = {
     const start=Date.now(), ts=new Date(start).toISOString();
     const it={unidad_id:code, ot:u.pf, sku:u.sku_pf+fi.suf, start, ts,
       pf:{fase:u.fase, sku_pf:u.sku_pf, nombre:(o&&(o.descripcion||o.nombre))||u.sku_pf, sku_nucleo:o?o.sku_nucleo:null, comps:{}}};
-    this.enCurso.set(code,it); this.savePF();
+    this.enCurso.set(code,it); this.savePF(); this.pfUlt[code]={t:Date.now(),a:'inicio'};
     qInsert('fabricacion_eventos',{unidad_id:code,ot:u.pf,sku:it.sku,puesto_id:this.user.id,tipo:'inicio',ts});
     toast(code+' · empieza '+fi.txt+(u.fase==='pegado'?'. Escanea '+this.faltan(it).map(k=>({nucleo:'núcleo',tapa:'tapa',platabanda:'platabanda'})[k]).join(', '):''),'ok'); beep(true);
     this.render();
   },
   async scanComponente(code){
     if([...this.enCurso.values()].some(it=>it.pf&&it.pf.comps&&Object.values(it.pf.comps).some(c=>c.id===code))){ toast(code+' ya está escaneado','err'); beep(false); return; }
+    if(this.pendienteEnCola(code)){ toast(code+' ya se ha usado (pendiente de sincronizar)','err'); beep(false); return; }
     let u=null;
-    try{ const {data,error}=await sb.from('unidades').select('id,sku,estado,fabricada_at').eq('id',code).limit(1); if(error) throw error; u=data&&data[0]; }
+    try{ const {data,error}=await sb.from('unidades').select('id,ot,sku,estado,fabricada_at').eq('id',code).limit(1); if(error) throw error; u=data&&data[0]; }
     catch(e){ toast('Sin conexión: no se puede comprobar '+code,'err'); beep(false); return; }
+    // una etiqueta de una OT por fabricar no es una pieza: se abre su lote como siempre
+    if(u && u.estado==='pendiente') return this.iniciar(code);
     const peg=this.pegadosIncompletos();
     const esperado=peg.map(it=>it.unidad_id+': '+this.faltan(it).map(k=>this.necesita(it)[k]).join(', ')).join(' · ');
     if(!u){ toast('Código no reconocido: '+code+'. Falta: '+esperado,'err'); beep(false); return; }
@@ -1290,7 +1340,7 @@ const Op = {
       const dispo=new Date(u.fabricada_at).getTime()+this.mad*86400000;
       if(Date.now()<dispo && !confirm('⚠️ '+code+' todavía está en MADURACIÓN (disponible el '+new Date(dispo).toLocaleDateString('es-ES')+').\n\n¿Usarlo igualmente?')){ beep(false); return; }
     }
-    cand.pf.comps[tipo]={id:code, sku:u.sku};
+    cand.pf.comps[tipo]={id:code, sku:u.sku, ot:u.ot};
     this.savePF();
     const quedan=this.faltan(cand);
     toast(code+' → '+cand.unidad_id+(quedan.length?' · falta '+quedan.map(k=>({nucleo:'núcleo',tapa:'tapa',platabanda:'platabanda'})[k]).join(', '):' · piezas completas'),'ok'); beep(true);
@@ -1306,21 +1356,20 @@ const Op = {
       if(falta.length && !confirm('Falta escanear: '+falta.map(k=>this.necesita(it)[k]).join(', ')+'.\n\n¿Terminar el pegado igualmente? Esas piezas no se descontarán del stock.')) return;
     }
     this.enCurso.delete(code); // antes del await: un doble toque no debe registrar dos "fin"
+    this.pfUlt=this.pfUlt||{}; this.pfUlt[code]={t:Date.now(),a:'fin'};
     const ts=new Date().toISOString(), finMs=new Date(ts).getTime();
     const retra=await this.retrabajosDe(new Date(it.start).toISOString(), ts);
     const seg=Math.max(0,(finMs-it.start)/1000 - solaparSeg(it.start,finMs,retra));
     qInsert('fabricacion_eventos',{unidad_id:code,ot:it.ot,sku:it.sku,puesto_id:this.user.id,tipo:'fin',ts});
     const patch={fase:fi.sig}; patch[fi.col]=ts;
+    let comps=[];
     if(p.fase==='pegado'){
       const c=p.comps||{};
       patch.nucleo_id=c.nucleo?c.nucleo.id:null; patch.tapa_id=c.tapa?c.tapa.id:null; patch.platabanda_id=c.platabanda?c.platabanda.id:null;
-      Object.values(c).forEach(x=>{
-        qUpdate('unidades',{id:x.id,estado:'stock'},{estado:'consumida',consumida_at:ts});
-        qConsumirReserva(x.sku,p.sku_pf);
-      });
+      comps=Object.values(c).map(x=>({id:x.id,sku:x.sku,ot:x.ot||null}));
     }
-    // solo avanza si sigue en esta fase (si otro puesto ya la hizo, no se pisa)
-    qUpdate('pf_unidades',{id:code,fase:p.fase},patch);
+    // un solo paso: avanza el colchón y consume sus piezas solo si sigue en esta fase
+    Q.enqueue({t:'pf_paso',id:code,fase:p.fase,patch,comps,sku_pf:p.sku_pf,pf:it.ot,ts});
     this.hechasHoy++; this.duracionesHoy.push(seg);
     this.ultimas.unshift({unidad_id:code,sku:it.sku,seg,txt:fi.txt}); this.ultimas=this.ultimas.slice(0,10);
     toast(code+' · '+fi.txt+' terminado ('+fmtDur(seg)+') → '+PF_SIG_TXT[fi.sig],'ok'); beep(true,true);
@@ -1333,7 +1382,8 @@ const Op = {
   async iniciar(code){
     let u=null, notFound=false;
     try{
-      const {data}=await sb.from('unidades').select('id,ot,sku,estado').eq('id',code).limit(1);
+      const {data,error}=await sb.from('unidades').select('id,ot,sku,estado').eq('id',code).limit(1);
+      if(error) throw error; // sin conexión: se sigue con lo que se sabe de la etiqueta
       if(data && data.length) u=data[0]; else notFound=true;
     }catch(e){ u=null; }
     if(notFound){ toast('Código no reconocido: '+code,'err'); beep(false); return; }
@@ -1475,7 +1525,7 @@ const Op = {
     const h0=new Date(); h0.setHours(0,0,0,0);
     const items=[];
     if(this.serie && this.serie.start<h0.getTime()) items.push({tipo:'serie'});
-    for(const it of this.enCurso.values()) if(it.start<h0.getTime()) items.push({tipo:'unidad',it});
+    for(const it of this.enCurso.values()) if(it.start<h0.getTime() && !esPF(it.unidad_id)) items.push({tipo:'unidad',it});
     this._abiertos=items;
     if(items.length) this.siguienteAbierto();
   },
@@ -1885,7 +1935,7 @@ const Enc = {
     code=String(code).trim().toUpperCase();
     if(this.cart.has(code)){ toast('Ya está en la lista','err'); return; }
     let u=null, notFound=false;
-    try{ const {data}=await sb.from('unidades').select('id,ot,sku,estado,fabricada_at').eq('id',code).limit(1); if(data&&data.length) u=data[0]; else notFound=true; }
+    try{ const {data,error}=await sb.from('unidades').select('id,ot,sku,estado,fabricada_at').eq('id',code).limit(1); if(error) throw error; if(data&&data.length) u=data[0]; else notFound=true; }
     catch(e){ u=null; }
     if(notFound){ toast('Código no reconocido: '+code,'err'); beep(false); return; }
     if(u){
@@ -1921,12 +1971,12 @@ const Enc = {
     const now=new Date().toISOString();
     for(const it of arr){
       qUpdate('unidades',{id:it.unidad_id,estado:'stock'},{estado:'consumida',consumida_at:now});
-      this.consumirReserva(it.sku);
+      this.consumirReserva(it.sku,it.ot);
     }
     toast(arr.length+' en cola de consumo','ok'); beep(true,true);
     this.cart.clear(); this.renderCart();
   },
-  consumirReserva(sku){ qConsumirReserva(sku); },
+  consumirReserva(sku,ot){ qConsumirReserva(sku,null,null,ot); },
 
   // ---------- STOCK ----------
   async loadStock(silent){
