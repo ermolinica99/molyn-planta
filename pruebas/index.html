@@ -801,18 +801,30 @@ async function readCached(k, fn){
 }
 // Supabase devuelve como mucho 1000 filas por consulta: esto pagina hasta traerlas todas.
 // 'order' debe dar un orden estable (si no, al paginar se pueden saltar o repetir filas).
+// La primera tanda pide también el total y el resto se piden a la vez (de 6 en 6): con tablas grandes
+// (p. ej. ~13.000 productos con tapas y platabandas) una detrás de otra se notaba lento.
+// build(conTotal) debe pasar {count:'exact'} a select() cuando conTotal es true; si no lo hace, va tanda a tanda.
 async function selAll(build, order){
-  let out=[], from=0; const size=1000;
-  while(true){
-    let q=build(); (order||[]).forEach(c=>{ q=q.order(c); });
-    const {data,error}=await q.range(from,from+size-1);
-    if(error) throw error;
-    out=out.concat(data||[]);
-    if(!data||data.length<size) break;
-    from+=size;
+  const size=1000;
+  const pide=(from,conTotal)=>{ let q=build(conTotal); (order||[]).forEach(c=>{ q=q.order(c); }); return q.range(from,from+size-1); };
+  const first=await pide(0,true);
+  if(first.error) throw first.error;
+  let out=first.data||[];
+  if(out.length<size) return out;
+  if(first.count==null){
+    let from=size;
+    while(true){ const {data,error}=await pide(from); if(error) throw error; out=out.concat(data||[]); if(!data||data.length<size) break; from+=size; }
+    return out;
+  }
+  const froms=[]; for(let f=size; f<first.count; f+=size) froms.push(f);
+  for(let k=0;k<froms.length;k+=6){
+    const res=await Promise.all(froms.slice(k,k+6).map(f=>pide(f)));
+    for(const r of res){ if(r.error) throw r.error; out=out.concat(r.data||[]); }
   }
   return out;
 }
+// todos los productos (sku, nombre…): son más de 1000 desde que hay tapas y platabandas
+function selProductos(cols){ return selAll(c=>sb.from('productos').select(cols,c?{count:'exact'}:undefined),['sku']); }
 // fecha YYYY-MM-DD en hora LOCAL (toISOString usa UTC y de 00:00 a 02:00 da el día anterior)
 function inicioHoyIso(){ const d=new Date(); d.setHours(0,0,0,0); return d.toISOString(); }
 function ymdLocal(d){ return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); }
@@ -988,9 +1000,7 @@ const Op = {
     });
     if(cfg) this.cfg=Object.assign(this.cfg,cfg);
     if(cfg && cfg.maduracion!=null) this.mad=Number(cfg.maduracion)||0;
-    const prods=await readCached('productos', async()=>{
-      const {data}=await sb.from('productos').select('sku,nombre'); return data;
-    });
+    const prods=await readCached('productos', ()=>selProductos('sku,nombre'));
     (prods||[]).forEach(p=>this.prodMap[p.sku]=p.nombre);
     await this.clasificarNucleos();
     const ts=await readCached('tiempos_vig', async()=>{
@@ -1058,7 +1068,7 @@ const Op = {
       // igual que Oficina: solo el consumo de los últimos 35 días, paginado (antes traía TODO el
       // histórico y, al pasar de 1000 consumos, se cortaba y la clasificación salía mal)
       const cutoff=new Date(Date.now()-35*86400000).toISOString();
-      const data=await selAll(()=>sb.from('unidades').select('sku,consumida_at').eq('estado','consumida').gte('consumida_at',cutoff),['id']);
+      const data=await selAll(c=>sb.from('unidades').select('sku,consumida_at',c?{count:'exact'}:undefined).eq('estado','consumida').gte('consumida_at',cutoff),['id']);
       const byS={};
       (data||[]).forEach(u=>{
         if(!u.consumida_at) return;
@@ -1154,8 +1164,8 @@ const Op = {
       // solo las últimas 2 semanas y paginado: antes traía TODO el historial del puesto y, al pasar
       // de 1000 eventos, Supabase cortaba y se perdían precisamente los más recientes (lo de hoy)
       const desde=new Date(Date.now()-14*86400000).toISOString();
-      const evs=await selAll(()=>sb.from('fabricacion_eventos')
-        .select('unidad_id,ot,sku,tipo,ts').eq('puesto_id',this.user.id).gte('ts',desde),['ts','unidad_id','tipo']);
+      const evs=await selAll(c=>sb.from('fabricacion_eventos')
+        .select('unidad_id,ot,sku,tipo,ts',c?{count:'exact'}:undefined).eq('puesto_id',this.user.id).gte('ts',desde),['ts','unidad_id','tipo']);
       const byU={};
       (evs||[]).forEach(e=>{(byU[e.unidad_id]=byU[e.unidad_id]||[]).push(e);});
       const hoy=new Date(); hoy.setHours(0,0,0,0);
@@ -1821,9 +1831,10 @@ const Enc = {
       if(cfg && cfg.maduracion!=null) this.mad=cfg.maduracion;
     }catch(e){}
     try{
-      const {data:prods}=await sb.from('productos').select('sku,nombre').order('sku');
+      const prods=await selProductos('sku,nombre');
       (prods||[]).forEach(p=>this.prodMap[p.sku]=p.nombre);
-      $('#nucList').innerHTML=(prods||[]).map(p=>`<option value="${esc(p.sku)}">${esc(p.nombre)}</option>`).join('');
+      // la lista de sugerencias solo con núcleos (con tapas y platabandas serían miles de opciones en la tablet)
+      $('#nucList').innerHTML=(prods||[]).filter(p=>tipoDe(p.sku)==='nucleo').map(p=>`<option value="${esc(p.sku)}">${esc(p.nombre)}</option>`).join('');
     }catch(e){}
     $('#parteFecha').value=ymdLocal(new Date());
     if(!this.ticking){ this.ticking=true; setInterval(()=>this.tick(),1000); }
@@ -1914,7 +1925,7 @@ const Enc = {
   async loadStock(silent){
     if(!silent || !this.stockData.length) $('#stockList').innerHTML='<div class="cargando">Cargando stock…</div>';
     try{
-      const data=await selAll(()=>sb.from('unidades').select('sku,fabricada_at').eq('estado','stock'),['id']);
+      const data=await selAll(c=>sb.from('unidades').select('sku,fabricada_at',c?{count:'exact'}:undefined).eq('estado','stock'),['id']);
       const now=Date.now(), madms=this.mad*86400000, g={};
       (data||[]).forEach(u=>{
         const b=g[u.sku]||(g[u.sku]={sku:u.sku,disp:0,madur:0});
@@ -1947,7 +1958,7 @@ const Enc = {
     try{
       const hoy=new Date(); hoy.setHours(0,0,0,0); const hIso=hoy.toISOString();
       const {data:ops}=await sb.from('puestos_trabajo').select('id,nombre').eq('activo',true).order('nombre');
-      const evs=await selAll(()=>sb.from('fabricacion_eventos').select('unidad_id,ot,sku,puesto_id,tipo,ts').gte('ts',hIso),['ts','unidad_id','tipo']);
+      const evs=await selAll(c=>sb.from('fabricacion_eventos').select('unidad_id,ot,sku,puesto_id,tipo,ts',c?{count:'exact'}:undefined).gte('ts',hIso),['ts','unidad_id','tipo']);
       const {data:pars}=await sb.from('paradas').select('puesto_id,motivo,inicio,fin').gte('inicio',hIso);
       const {data:turs}=await sb.from('turnos').select('puesto_id,inicio,fin').gte('inicio',hIso);
       const now=Date.now();
@@ -2136,8 +2147,8 @@ const Enc = {
       $('#parteLanzVacio').classList.toggle('hidden', oarr.length>0);
       $('#parteLanz').innerHTML=oarr.map(o=>this.filaOT(o)).join('');
 
-      const evs=await selAll(()=>sb.from('fabricacion_eventos').select('sku,tipo,ts').eq('tipo','fin').gte('ts',iIso).lte('ts',fIso),['ts','unidad_id']);
-      const cons=await selAll(()=>sb.from('unidades').select('sku,consumida_at').gte('consumida_at',iIso).lte('consumida_at',fIso),['id']);
+      const evs=await selAll(c=>sb.from('fabricacion_eventos').select('sku,tipo,ts',c?{count:'exact'}:undefined).eq('tipo','fin').gte('ts',iIso).lte('ts',fIso),['ts','unidad_id']);
+      const cons=await selAll(c=>sb.from('unidades').select('sku,consumida_at',c?{count:'exact'}:undefined).gte('consumida_at',iIso).lte('consumida_at',fIso),['id']);
       const g={};
       (evs||[]).forEach(e=>{(g[e.sku]=g[e.sku]||{sku:e.sku,fab:0,con:0}).fab++;});
       (cons||[]).forEach(c=>{(g[c.sku]=g[c.sku]||{sku:c.sku,fab:0,con:0}).con++;});
@@ -2155,7 +2166,7 @@ const Enc = {
   async loadLotes(){
     $('#lotesList').innerHTML='<div class="cargando">Cargando programas…</div>';
     try{
-      const {data:prods}=await sb.from('productos').select('sku,descripcion');
+      const prods=await selProductos('sku,descripcion');
       const progs=[...new Set((prods||[]).map(p=>{ const m=(p.descripcion||'').match(/\s*(N\d+)/); return m?m[1]:null; }).filter(Boolean))]
         .sort((a,b)=>a.length-b.length||a.localeCompare(b));
       let lotes={};
