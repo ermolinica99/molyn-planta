@@ -1047,7 +1047,7 @@ const Op = {
   paro:null, paroInicio:null, prodMap:{}, cam:null, camOn:false,
   lastScan:{code:null, t:0}, ticking:false,
   turno:null, turnoInicio:null, paradasSeg:0, paradasSesion:[], cfg:{descanso_min:60}, stdSku:{}, provisional:new Set(),
-  lastActivityTs:null, misFasesPF:new Set(), mad:2,
+  lastActivityTs:null, misFasesPF:new Set(), misFases:new Set(), mad:2,
 
   async init(u){
     this.user=u;
@@ -1070,7 +1070,15 @@ const Op = {
       const lp=await readCached('lotes_prog', async()=>{ const {data}=await sb.from('lotes_programa').select('programa,tiempo_teorico_seg,puesto_id'); return data; });
       (lp||[]).forEach(r=>{ if(r.tiempo_teorico_seg) this.tiempoTeoricoPrograma[r.programa]=r.tiempo_teorico_seg; });
       // fases de producto final asignadas a este puesto (Oficina → Ajustes → Lotes). Sin asignar: puede hacer todas.
-      this.misFasesPF=new Set(Object.keys(PF_FASE).filter(k=>(lp||[]).some(r=>r.programa===PF_FASE[k].clave && r.puesto_id!=null && String(r.puesto_id)===String(this.user.id))));
+      // fases de este puesto (Oficina → Configuración → Puestos de trabajo; varias por puesto y varios puestos por fase).
+      // Si el puesto no tiene ninguna marcada, se mira la asignación antigua (un puesto por fase en Lotes).
+      let fs=null;
+      try{ const pt=await readCached('mi_puesto', async()=>{ const {data,error}=await sb.from('puestos_trabajo').select('*').eq('id',this.user.id).maybeSingle(); if(error) throw error; return data; });
+        if(pt && Array.isArray(pt.fases) && pt.fases.length) fs=pt.fases; }catch(e){}
+      if(!fs){ const PROG_FASE={TAPA:'tapa',PTB:'platabanda',PEG:'pegado',COS:'cosido',EMB:'embalaje'};
+        fs=[...new Set((lp||[]).filter(r=>r.puesto_id!=null && String(r.puesto_id)===String(this.user.id)).map(r=>PROG_FASE[r.programa]||'nucleo'))]; }
+      this.misFases=new Set(fs);
+      this.misFasesPF=new Set(Object.keys(PF_FASE).filter(k=>this.misFases.has(k)));
     }catch(e){}
     await this.comprobarTurno();
     this.loadSerie();
@@ -1342,7 +1350,7 @@ const Op = {
     if(u.fase==='baja'){ toast(code+' está dado de baja (defectuoso)','err'); beep(false); return; }
     const fi=PF_FASE[u.fase]; if(!fi){ toast('Estado desconocido: '+u.fase,'err'); beep(false); return; }
     if(this.misFasesPF.size && !this.misFasesPF.has(u.fase)){
-      toast(code+' está pendiente de '+fi.txt+'. Tu puesto hace '+[...this.misFasesPF].map(k=>PF_FASE[k].txt).join(', ')+'.','err'); beep(false); return;
+      toast(code+' está pendiente de '+fi.txt+'. Tu puesto hace '+[...this.misFasesPF].map(k=>PF_FASE[k].txt).join(', ')+' (se cambia en Oficina → Puestos de trabajo).','err'); beep(false); return;
     }
     const start=Date.now(), ts=new Date(start).toISOString();
     const it={unidad_id:code, ot:u.pf, sku:u.sku_pf+fi.suf, start, ts,
@@ -1484,6 +1492,11 @@ const Op = {
       const {data:od}=await sb.from('ordenes').select('nombre,sku').eq('ot',u.ot).limit(1);
       if(od&&od[0]){ if(!u.sku && od[0].sku) u.sku=od[0].sku; u._nombre=od[0].nombre; }
     }catch(e){}
+    const tFab=tipoDe(u.sku);
+    if(u.sku && this.misFases.size && !this.misFases.has(tFab)){
+      const txt={nucleo:'núcleos',tapa:'tapas',platabanda:'platabandas'}[tFab]||tFab;
+      toast('Tu puesto no fabrica '+txt+' ('+u.sku+'). Si debe hacerlo, márcalo en Oficina → Puestos de trabajo.','err'); beep(false); return;
+    }
     return this.iniciarSerie(u);
   },
 
