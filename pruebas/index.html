@@ -719,6 +719,22 @@ const Q = {
         const {data:u,error:e1}=await sb.from('unidades').update({estado:'consumida',consumida_at:op.ts}).eq('id',c.id).eq('estado','stock').select('id'); if(e1) throw e1;
         if(u&&u.length) await consumirReservaDB({sku:c.sku,sku_pf:op.sku_pf,pf:op.pf,ot:c.ot});
       }
+      // piezas que no se escanearon: se gastaron igual, así que se descuenta una de cada del stock (la más
+      // antigua) y su reserva. No se apunta en el colchón cuál fue, porque no se sabe. Lo ya descontado se
+      // guarda en la propia operación para que un reintento no descuente otra.
+      op.auto=op.auto||{};
+      for(const f of (op.faltan||[])){
+        if(op.auto[f.k]) continue;
+        let id=null;
+        for(let i=0;i<3&&!id;i++){
+          const {data:cand,error:e3}=await sb.from('unidades').select('id').eq('sku',f.sku).eq('estado','stock').order('fabricada_at',{ascending:true,nullsFirst:false}).order('id').limit(1); if(e3) throw e3;
+          if(!cand||!cand.length) break;
+          const {data:u,error:e4}=await sb.from('unidades').update({estado:'consumida',consumida_at:op.ts}).eq('id',cand[0].id).eq('estado','stock').select('id'); if(e4) throw e4;
+          if(u&&u.length) id=cand[0].id;
+        }
+        await consumirReservaDB({sku:f.sku,sku_pf:op.sku_pf,pf:op.pf,ot:null});
+        op.auto[f.k]=id||'sin-stock'; this.save();
+      }
       const {error:e2}=await sb.from('pf_unidades').update(op.patch).eq('id',op.id).eq('fase',op.fase); if(e2) throw e2;
     }
   },
@@ -1396,7 +1412,7 @@ const Op = {
     const fi=PF_FASE[p.fase]; if(!fi){ toast('No se sabe en qué fase está '+code,'err'); return; }
     if(p.fase==='pegado'){
       const falta=this.faltan(it);
-      if(falta.length && !confirm('Falta escanear: '+falta.map(k=>this.necesita(it)[k]).join(', ')+'.\n\n¿Terminar el pegado igualmente? Esas piezas no se descontarán del stock.')) return;
+      if(falta.length && !confirm('Falta escanear: '+falta.map(k=>this.necesita(it)[k]).join(', ')+'.\n\n¿Terminar el pegado igualmente? Se descontará del stock una de cada igualmente (la más antigua), pero no quedará apuntado cuál lleva este colchón.')) return;
     }
     this.enCurso.delete(code); // antes del await: un doble toque no debe registrar dos "fin"
     this.pfUlt=this.pfUlt||{}; this.pfUlt[code]={t:Date.now(),a:'fin'};
@@ -1405,14 +1421,15 @@ const Op = {
     const seg=Math.max(0,(finMs-it.start)/1000 - solaparSeg(it.start,finMs,retra));
     qInsert('fabricacion_eventos',{unidad_id:code,ot:it.ot,sku:it.sku,puesto_id:this.user.id,tipo:'fin',ts});
     const patch={fase:fi.sig}; patch[fi.col]=ts;
-    let comps=[];
+    let comps=[], faltan=[];
     if(p.fase==='pegado'){
       const c=p.comps||{};
       patch.nucleo_id=c.nucleo?c.nucleo.id:null; patch.tapa_id=c.tapa?c.tapa.id:null; patch.platabanda_id=c.platabanda?c.platabanda.id:null;
       comps=Object.values(c).map(x=>({id:x.id,sku:x.sku,ot:x.ot||null}));
+      faltan=this.faltan(it).map(k=>({k,sku:this.necesita(it)[k]}));
     }
     // un solo paso: avanza el colchón y consume sus piezas solo si sigue en esta fase
-    Q.enqueue({t:'pf_paso',id:code,fase:p.fase,patch,comps,sku_pf:p.sku_pf,pf:it.ot,ts});
+    Q.enqueue({t:'pf_paso',id:code,fase:p.fase,patch,comps,faltan,sku_pf:p.sku_pf,pf:it.ot,ts});
     this.hechasHoy++; this.duracionesHoy.push(seg);
     this.ultimas.unshift({unidad_id:code,sku:it.sku,seg,txt:fi.txt}); this.ultimas=this.ultimas.slice(0,10);
     toast(code+' · '+fi.txt+' terminado ('+fmtDur(seg)+') → '+PF_SIG_TXT[fi.sig],'ok'); beep(true,true);
