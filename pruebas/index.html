@@ -719,21 +719,11 @@ const Q = {
         const {data:u,error:e1}=await sb.from('unidades').update({estado:'consumida',consumida_at:op.ts}).eq('id',c.id).eq('estado','stock').select('id'); if(e1) throw e1;
         if(u&&u.length) await consumirReservaDB({sku:c.sku,sku_pf:op.sku_pf,pf:op.pf,ot:c.ot});
       }
-      // piezas que no se escanearon: se gastaron igual, así que se descuenta una de cada del stock (la más
-      // antigua) y su reserva. No se apunta en el colchón cuál fue, porque no se sabe. Lo ya descontado se
-      // guarda en la propia operación para que un reintento no descuente otra.
-      op.auto=op.auto||{};
-      for(const f of (op.faltan||[])){
-        if(op.auto[f.k]) continue;
-        let id=null;
-        for(let i=0;i<3&&!id;i++){
-          const {data:cand,error:e3}=await sb.from('unidades').select('id').eq('sku',f.sku).eq('estado','stock').order('fabricada_at',{ascending:true,nullsFirst:false}).order('id').limit(1); if(e3) throw e3;
-          if(!cand||!cand.length) break;
-          const {data:u,error:e4}=await sb.from('unidades').update({estado:'consumida',consumida_at:op.ts}).eq('id',cand[0].id).eq('estado','stock').select('id'); if(e4) throw e4;
-          if(u&&u.length) id=cand[0].id;
-        }
-        await consumirReservaDB({sku:f.sku,sku_pf:op.sku_pf,pf:op.pf,ot:null});
-        op.auto[f.k]=id||'sin-stock'; this.save();
+      // piezas que el colchón no lleva (marcado en la tablet): no se descuenta nada y queda un aviso para
+      // que Oficina lo clasifique. La ref evita duplicarlo si se reenvía.
+      for(const f of (op.noLleva||[])){
+        const {error:e3}=await sb.from('pf_sin_pieza').insert({ref:op.id+'|'+f.k+'|'+op.ts,estado:'pendiente',pf_unidad:op.id,pf:op.pf,sku_pf:op.sku_pf,pieza:f.k,sku:f.sku,puesto_id:op.puesto_id||null,created_at:op.ts});
+        if(e3 && e3.code!=='23505') throw e3;
       }
       const {error:e2}=await sb.from('pf_unidades').update(op.patch).eq('id',op.id).eq('fase',op.fase); if(e2) throw e2;
     }
@@ -1343,8 +1333,19 @@ const Op = {
     }
     if(this._reconOk) this.savePF(); this.render();
   },
-  necesita(it){ const p=it.pf||{}; return {nucleo:p.sku_nucleo||null, tapa:p.sku_pf+'_TAPA', platabanda:p.sku_pf+'_PTB'}; },
+  // piezas que lleva el modelo (las que Oficina tiene marcadas como que no lleva no se piden)
+  necesitaBase(it){ const p=it.pf||{}; return {nucleo:p.sku_nucleo||null, tapa:p.sin_tapa?null:p.sku_pf+'_TAPA', platabanda:p.sin_platabanda?null:p.sku_pf+'_PTB'}; },
+  // y de ellas, las que este colchón lleva (sin las marcadas "No lleva" en la tablet)
+  necesita(it){ const n=this.necesitaBase(it), nl=(it.pf&&it.pf.noLleva)||{}; Object.keys(nl).forEach(k=>{ if(nl[k]) n[k]=null; }); return n; },
   faltan(it){ const n=this.necesita(it), c=(it.pf&&it.pf.comps)||{}; return ['nucleo','tapa','platabanda'].filter(k=>n[k] && !c[k]); },
+  noLleva(uid,k){
+    const it=this.enCurso.get(uid); if(!it||!it.pf) return;
+    const txt={nucleo:'núcleo',tapa:'tapa',platabanda:'platabanda'}[k];
+    if(!confirm(uid+': ¿este colchón NO lleva '+txt+'?\n\nNo se descontará ninguna y Oficina recibirá un aviso para revisarlo.')) return;
+    it.pf.noLleva=Object.assign({},it.pf.noLleva,{[k]:true}); if(it.pf.comps) delete it.pf.comps[k];
+    this.savePF(); this.render(); toast(uid+' · marcado: no lleva '+txt,'ok');
+  },
+  siLleva(uid,k){ const it=this.enCurso.get(uid); if(!it||!it.pf||!it.pf.noLleva) return; delete it.pf.noLleva[k]; this.savePF(); this.render(); },
   pegadosIncompletos(){ return [...this.enCurso.values()].filter(it=>it.pf && it.pf.fase==='pegado' && this.faltan(it).length); },
   async scanPF(code){
     // una etiqueta que se queda delante de la cámara no debe empujar el colchón por todas las fases:
@@ -1368,9 +1369,11 @@ const Op = {
     if(this.misFasesPF.size && !this.misFasesPF.has(u.fase)){
       toast(code+' está pendiente de '+fi.txt+'. Tu puesto hace '+[...this.misFasesPF].map(k=>PF_FASE[k].txt).join(', ')+' (se cambia en Oficina → Puestos de trabajo).','err'); beep(false); return;
     }
+    let mod={};
+    if(u.fase==='pegado'){ try{ const {data:md,error:em}=await sb.from('modelos').select('sin_tapa,sin_platabanda').eq('sku_pf',u.sku_pf).limit(1); if(!em&&md&&md[0]) mod=md[0]; }catch(e){} }
     const start=Date.now(), ts=new Date(start).toISOString();
     const it={unidad_id:code, ot:u.pf, sku:u.sku_pf+fi.suf, start, ts,
-      pf:{fase:u.fase, sku_pf:u.sku_pf, nombre:(o&&(o.descripcion||o.nombre))||u.sku_pf, sku_nucleo:o?o.sku_nucleo:null, comps:{}}};
+      pf:{fase:u.fase, sku_pf:u.sku_pf, nombre:(o&&(o.descripcion||o.nombre))||u.sku_pf, sku_nucleo:o?o.sku_nucleo:null, sin_tapa:!!mod.sin_tapa, sin_platabanda:!!mod.sin_platabanda, comps:{}}};
     // repegado (volvió por un defecto): ya tiene sus piezas puestas; se dan por escaneadas (se pueden quitar
     // con ✕ y escanear otra si alguna no sirve)
     if(u.fase==='pegado'){ const n=this.necesita(it);
@@ -1412,7 +1415,9 @@ const Op = {
     const fi=PF_FASE[p.fase]; if(!fi){ toast('No se sabe en qué fase está '+code,'err'); return; }
     if(p.fase==='pegado'){
       const falta=this.faltan(it);
-      if(falta.length && !confirm('Falta escanear: '+falta.map(k=>this.necesita(it)[k]).join(', ')+'.\n\n¿Terminar el pegado igualmente? Se descontará del stock una de cada igualmente (la más antigua), pero no quedará apuntado cuál lleva este colchón.')) return;
+      // obligatorio: lo que se descuenta del stock es lo que se escanea. Si la etiqueta no se lee, se escribe
+      // su código abajo; si el colchón de verdad no lleva esa pieza, se marca "No lleva".
+      if(falta.length){ toast('Falta escanear '+falta.map(k=>({nucleo:'el núcleo',tapa:'la tapa',platabanda:'la platabanda'})[k]+' ('+this.necesita(it)[k]+')').join(', ')+'. Si la etiqueta no se lee, escribe su código abajo; si no lleva esa pieza, pulsa "No lleva".','err'); beep(false); return; }
     }
     this.enCurso.delete(code); // antes del await: un doble toque no debe registrar dos "fin"
     this.pfUlt=this.pfUlt||{}; this.pfUlt[code]={t:Date.now(),a:'fin'};
@@ -1421,15 +1426,15 @@ const Op = {
     const seg=Math.max(0,(finMs-it.start)/1000 - solaparSeg(it.start,finMs,retra));
     qInsert('fabricacion_eventos',{unidad_id:code,ot:it.ot,sku:it.sku,puesto_id:this.user.id,tipo:'fin',ts});
     const patch={fase:fi.sig}; patch[fi.col]=ts;
-    let comps=[], faltan=[];
+    let comps=[], noLleva=[];
     if(p.fase==='pegado'){
       const c=p.comps||{};
       patch.nucleo_id=c.nucleo?c.nucleo.id:null; patch.tapa_id=c.tapa?c.tapa.id:null; patch.platabanda_id=c.platabanda?c.platabanda.id:null;
       comps=Object.values(c).map(x=>({id:x.id,sku:x.sku,ot:x.ot||null}));
-      faltan=this.faltan(it).map(k=>({k,sku:this.necesita(it)[k]}));
+      const nl=it.pf.noLleva||{}; noLleva=Object.keys(nl).filter(k=>nl[k]).map(k=>({k,sku:this.necesitaBase(it)[k]}));
     }
     // un solo paso: avanza el colchón y consume sus piezas solo si sigue en esta fase
-    Q.enqueue({t:'pf_paso',id:code,fase:p.fase,patch,comps,faltan,sku_pf:p.sku_pf,pf:it.ot,ts});
+    Q.enqueue({t:'pf_paso',id:code,fase:p.fase,patch,comps,noLleva,puesto_id:this.user.id,sku_pf:p.sku_pf,pf:it.ot,ts});
     this.hechasHoy++; this.duracionesHoy.push(seg);
     this.ultimas.unshift({unidad_id:code,sku:it.sku,seg,txt:fi.txt}); this.ultimas=this.ultimas.slice(0,10);
     toast(code+' · '+fi.txt+' terminado ('+fmtDur(seg)+') → '+PF_SIG_TXT[fi.sig],'ok'); beep(true,true);
@@ -1929,11 +1934,14 @@ const Op = {
         let h=`<div class="usub" style="margin-top:2px"><b style="color:var(--terra)">${esc(fi.txt)}</b> · ${esc(it.ot)}</div>`;
         h+=`<button class="btn-ghost sm" style="margin-top:6px;color:var(--red);border-color:var(--red)" data-uid="${esc(it.unidad_id)}" onclick="Op.defecto(this.dataset.uid)">⚠ Defectuoso</button>`;
         if(it.pf.fase==='pegado'){
-          const n=this.necesita(it), c=it.pf.comps||{};
-          h+=`<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:5px">`+['nucleo','tapa','platabanda'].filter(k=>n[k]).map(k=>{
+          const nb=this.necesitaBase(it), n=this.necesita(it), c=it.pf.comps||{}, uid=esc(it.unidad_id);
+          h+=`<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:5px;align-items:center">`+['nucleo','tapa','platabanda'].filter(k=>nb[k]).map(k=>{
             const ok=c[k], lab={nucleo:'Núcleo',tapa:'Tapa',platabanda:'Platabanda'}[k];
-            return `<span style="font-size:12px;padding:3px 8px;border-radius:6px;${ok?'background:#E4EDE6;color:var(--green)':'background:#F7EDDF;color:#8a5a1e'}">${ok?'✓':'○'} ${lab}: ${esc(ok?c[k].id:n[k])}${ok?` <a href="#" style="color:inherit" onclick="event.preventDefault();Op.quitarComp('${esc(it.unidad_id)}','${k}')">✕</a>`:''}</span>`;
-          }).join('')+(it.pf.sku_nucleo?'':'<span style="font-size:12px;color:var(--muted)">sin núcleo</span>')+`</div>`;
+            if(!n[k]) return `<span style="font-size:12px;padding:3px 8px;border-radius:6px;background:#EDE7F3;color:#5B3F7A">✕ ${lab}: no lleva <a href="#" style="color:inherit" onclick="event.preventDefault();Op.siLleva('${uid}','${k}')">deshacer</a></span>`;
+            return `<span style="font-size:12px;padding:3px 8px;border-radius:6px;${ok?'background:#E4EDE6;color:var(--green)':'background:#F7EDDF;color:#8a5a1e'}">${ok?'✓':'○'} ${lab}: ${esc(ok?c[k].id:n[k])}${ok?` <a href="#" style="color:inherit" onclick="event.preventDefault();Op.quitarComp('${uid}','${k}')">✕</a>`:` · <a href="#" style="color:inherit;font-weight:700" onclick="event.preventDefault();Op.noLleva('${uid}','${k}')">No lleva</a>`}</span>`;
+          }).join('')+(it.pf.sku_nucleo?'':'<span style="font-size:12px;color:var(--muted)">sin núcleo</span>')
+            +(it.pf.sin_tapa?'<span style="font-size:12px;color:var(--muted)">modelo sin tapa</span>':'')+(it.pf.sin_platabanda?'<span style="font-size:12px;color:var(--muted)">modelo sin platabanda</span>':'')+`</div>`
+            +(this.faltan(it).length?`<div style="font-size:11px;color:var(--muted);margin-top:4px">Hay que escanear todas las piezas para terminar. Si una etiqueta no se lee, escribe su código en "Código de etiqueta".</div>`:'');
         }
         return h; })():'';
       const std=this.stdSku[it.sku]||this.tiempoDefaultDe(it.sku);
