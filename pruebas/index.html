@@ -1328,8 +1328,8 @@ const Op = {
       if(guard[code] && guard[code].fase===faseDeSkuPF(it.sku)){ it.pf=guard[code]; continue; }
       const fase=faseDeSkuPF(it.sku); if(!fase) continue;
       it.pf={fase, sku_pf:String(it.sku).slice(0,-PF_FASE[fase].suf.length), nombre:'', sku_nucleo:null, comps:{}, sinDatos:true};
-      try{ const {data:od}=await sb.from('pf_ordenes').select('nombre,descripcion,sku_nucleo').eq('pf',it.ot).limit(1);
-        if(od&&od[0]){ it.pf.nombre=od[0].descripcion||od[0].nombre||''; it.pf.sku_nucleo=od[0].sku_nucleo; delete it.pf.sinDatos; } }catch(e){}
+      try{ const {data:od}=await sb.from('pf_ordenes').select('*').eq('pf',it.ot).limit(1);
+        if(od&&od[0]){ it.pf.nombre=od[0].descripcion||od[0].nombre||''; it.pf.sku_nucleo=od[0].sku_nucleo; it.pf.corte=od[0].nucleo_corte||null; delete it.pf.sinDatos; } }catch(e){}
     }
     if(this._reconOk) this.savePF(); this.render();
   },
@@ -1359,7 +1359,7 @@ const Op = {
     try{
       const {data,error}=await sb.from('pf_unidades').select('id,pf,sku_pf,fase,nucleo_id,tapa_id,platabanda_id').eq('id',code).limit(1); if(error) throw error;
       u=data&&data[0];
-      if(u){ const {data:od}=await sb.from('pf_ordenes').select('pf,nombre,descripcion,sku_nucleo,estado').eq('pf',u.pf).limit(1); o=od&&od[0]; }
+      if(u){ const {data:od}=await sb.from('pf_ordenes').select('*').eq('pf',u.pf).limit(1); o=od&&od[0]; }
     }catch(e){ toast('Sin conexión: para empezar un colchón hace falta conexión','err'); beep(false); return; }
     if(!u){ toast('Colchón no reconocido: '+code,'err'); beep(false); return; }
     if(u.fase==='terminado'){ toast(code+' ya está embalado','err'); beep(false); return; }
@@ -1373,14 +1373,14 @@ const Op = {
     if(u.fase==='pegado'){ try{ const {data:md,error:em}=await sb.from('modelos').select('sin_tapa,sin_platabanda').eq('sku_pf',u.sku_pf).limit(1); if(!em&&md&&md[0]) mod=md[0]; }catch(e){} }
     const start=Date.now(), ts=new Date(start).toISOString();
     const it={unidad_id:code, ot:u.pf, sku:u.sku_pf+fi.suf, start, ts,
-      pf:{fase:u.fase, sku_pf:u.sku_pf, nombre:(o&&(o.descripcion||o.nombre))||u.sku_pf, sku_nucleo:o?o.sku_nucleo:null, sin_tapa:!!mod.sin_tapa, sin_platabanda:!!mod.sin_platabanda, comps:{}}};
+      pf:{fase:u.fase, sku_pf:u.sku_pf, nombre:(o&&(o.descripcion||o.nombre))||u.sku_pf, sku_nucleo:o?o.sku_nucleo:null, corte:(o&&o.nucleo_corte)||null, sin_tapa:!!mod.sin_tapa, sin_platabanda:!!mod.sin_platabanda, comps:{}}};
     // repegado (volvió por un defecto): ya tiene sus piezas puestas; se dan por escaneadas (se pueden quitar
     // con ✕ y escanear otra si alguna no sirve)
     if(u.fase==='pegado'){ const n=this.necesita(it);
       [['nucleo','nucleo_id'],['tapa','tapa_id'],['platabanda','platabanda_id']].forEach(([k,c])=>{ if(u[c] && n[k]) it.pf.comps[k]={id:u[c],sku:n[k],ot:null,puesta:true}; }); }
     this.enCurso.set(code,it); this.savePF(); this.pfUlt[code]={t:Date.now(),a:'inicio'};
     qInsert('fabricacion_eventos',{unidad_id:code,ot:u.pf,sku:it.sku,puesto_id:this.user.id,tipo:'inicio',ts});
-    toast(code+' · empieza '+fi.txt+(u.fase==='pegado'?'. Escanea '+this.faltan(it).map(k=>({nucleo:'núcleo',tapa:'tapa',platabanda:'platabanda'})[k]).join(', '):''),'ok'); beep(true);
+    toast(code+' · empieza '+fi.txt+(u.fase==='pegado'?'. Escanea '+this.faltan(it).map(k=>({nucleo:'núcleo',tapa:'tapa',platabanda:'platabanda'})[k]).join(', ')+(it.pf.corte&&this.necesita(it).nucleo?' · ✂ el núcleo se corta a '+((/X(\d{2,3})/.exec(String(it.pf.corte).toUpperCase())||[])[1]||''):''):''),'ok'); beep(true);
     this.render();
   },
   async scanComponente(code){
@@ -1941,6 +1941,8 @@ const Op = {
             return `<span style="font-size:12px;padding:3px 8px;border-radius:6px;${ok?'background:#E4EDE6;color:var(--green)':'background:#F7EDDF;color:#8a5a1e'}">${ok?'✓':'○'} ${lab}: ${esc(ok?c[k].id:n[k])}${ok?` <a href="#" style="color:inherit" onclick="event.preventDefault();Op.quitarComp('${uid}','${k}')">✕</a>`:` · <a href="#" style="color:inherit;font-weight:700" onclick="event.preventDefault();Op.noLleva('${uid}','${k}')">No lleva</a>`}</span>`;
           }).join('')+(it.pf.sku_nucleo?'':'<span style="font-size:12px;color:var(--muted)">sin núcleo</span>')
             +(it.pf.sin_tapa?'<span style="font-size:12px;color:var(--muted)">modelo sin tapa</span>':'')+(it.pf.sin_platabanda?'<span style="font-size:12px;color:var(--muted)">modelo sin platabanda</span>':'')+`</div>`
+            +(it.pf.corte&&nb.nucleo?(()=>{ const m=/X(\d{2,3})/.exec(String(it.pf.corte).toUpperCase()), d=/X(\d{2,3})/.exec(String(nb.nucleo).toUpperCase());
+                return `<div style="margin-top:6px;padding:6px 10px;border-radius:8px;background:#FBE9DD;color:var(--terra);font-weight:800;font-size:14px">✂ Núcleo: escanea un ${esc(nb.nucleo)} y córtalo${m?` a ${m[1]}`:''}${d&&m?` (de ${d[1]} a ${m[1]})`:''}</div>`; })():'')
             +(this.faltan(it).length?`<div style="font-size:11px;color:var(--muted);margin-top:4px">Hay que escanear todas las piezas para terminar. Si una etiqueta no se lee, escribe su código en "Código de etiqueta".</div>`:'');
         }
         return h; })():'';
