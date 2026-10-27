@@ -1342,8 +1342,8 @@ const Op = {
   },
 
   // TIEMPO de cada núcleo, con la misma regla que Oficina (Prod.calcRefs): sus unidades de los últimos 90 días
-  // (inicio → fin sin las paradas del puesto), quitando los tiempos raros (menos de la mitad o más del doble de
-  // la mediana) y agrupadas por TIRADA: cada lote cerrado (sus unidades van encadenadas, el fin de una es el
+  // (inicio → fin sin las paradas del puesto), quitando los tiempos raros (menos de 1 min, o menos de la mitad o más del
+  // doble de la mediana) y agrupadas por TIRADA: cada lote cerrado (sus unidades van encadenadas, el fin de una es el
   // inicio de la siguiente, misma OT y puesto); una unidad suelta es su propia tirada. Cada tirada es una
   // muestra (su tiempo medio por unidad). Con el mínimo de tiradas (config.min_tiradas, 7 por defecto) o más se guarda la mediana de las tiradas (n_unidades =
   // nº de tiradas); con menos, el estándar del programa.
@@ -1363,8 +1363,9 @@ const Op = {
         arr.forEach(e=>{ if(e.tipo==='inicio'){ i0=e; return; } if(e.tipo!=='fin'||!i0) return;
           const a=new Date(i0.ts).getTime(), b=new Date(e.ts).getTime(), ot=e.ot||i0.ot||null; i0=null;
           const d=(b-a)/1000-solaparSeg(a,b,parP[e.puesto_id]||[]); if(d>0&&d<8*3600) us.push({seg:d,ot,puesto_id:e.puesto_id,ini:a,fin:b}); }); });
-      const base=us.length>=3?medianaJs(us.map(x=>x.seg)):0;
-      const okU=new Set(base?us.filter(x=>x.seg>=base*0.5&&x.seg<=base*2):us);
+      // fuera lo de menos de 1 min (nunca es un tiempo real) y, con lo que queda, lo de menos de la mitad o más del doble
+      const ok1=us.filter(x=>x.seg>=60), base=ok1.length>=3?medianaJs(ok1.map(x=>x.seg)):0;
+      const okU=new Set(base?ok1.filter(x=>x.seg>=base*0.5&&x.seg<=base*2):ok1);
       // tiradas: misma OT y puesto, encadenadas (inicio = fin de la anterior, ±1 s)
       const gt={}; us.forEach(x=>{ const k=(x.ot||'')+'|'+x.puesto_id; (gt[k]=gt[k]||[]).push(x); });
       const mues=[]; Object.values(gt).forEach(arr=>{ arr.sort((a,b)=>a.ini-b.ini); let cur=null, finAnt=null; const tir=[];
