@@ -1008,6 +1008,8 @@ const Op = {
       const {data}=await sb.from('config').select('descanso_min,hora_inicio,hora_fin,umbral_semanal,dias_historico').eq('id',1).single(); return data;
     });
     if(cfg) this.cfg=Object.assign(this.cfg,cfg);
+    // mínimo de tiradas para usar el tiempo propio de un núcleo (Oficina → Tiempo por núcleo); 7 si falta la columna
+    try{ const {data:mt}=await sb.from('config').select('min_tiradas').eq('id',1).single(); if(mt&&Number(mt.min_tiradas)>0) this.minTiradas=Number(mt.min_tiradas); }catch(e){}
     const prods=await readCached('productos', async()=>{
       const {data}=await sb.from('productos').select('sku,nombre'); return data;
     });
@@ -1016,8 +1018,8 @@ const Op = {
     const ts=await readCached('tiempos_vig2', async()=>{
       const {data}=await sb.from('tiempos_sku').select('sku,mediana_seg,n_unidades').eq('vigente',true); return data;
     });
-    // solo los tiempos con 7 tiradas o más; el resto usa el estándar del programa
-    (ts||[]).forEach(t=>{ if(Number(t.n_unidades)>=7 && Number(t.mediana_seg)>0) this.stdSku[t.sku]=Number(t.mediana_seg); });
+    // solo los tiempos con el mínimo de tiradas o más; el resto usa el estándar del programa
+    (ts||[]).forEach(t=>{ if(Number(t.n_unidades)>=(this.minTiradas||7) && Number(t.mediana_seg)>0) this.stdSku[t.sku]=Number(t.mediana_seg); });
     this.tiempoTeoricoPrograma={};
     try{
       const {data:lp}=await sb.from('lotes_programa').select('programa,tiempo_teorico_seg');
@@ -1343,7 +1345,7 @@ const Op = {
   // (inicio → fin sin las paradas del puesto), quitando los tiempos raros (menos de la mitad o más del doble de
   // la mediana) y agrupadas por TIRADA: cada lote cerrado (sus unidades van encadenadas, el fin de una es el
   // inicio de la siguiente, misma OT y puesto); una unidad suelta es su propia tirada. Cada tirada es una
-  // muestra (su tiempo medio por unidad). Con 7 tiradas o más se guarda la mediana de las tiradas (n_unidades =
+  // muestra (su tiempo medio por unidad). Con el mínimo de tiradas (config.min_tiradas, 7 por defecto) o más se guarda la mediana de las tiradas (n_unidades =
   // nº de tiradas); con menos, el estándar del programa.
   async aprenderTiempo(sku){
     const ahora=Date.now(); this._aprendido=this._aprendido||{};
@@ -1369,13 +1371,13 @@ const Op = {
         arr.forEach(x=>{ if(!cur||!x.ot||finAnt==null||Math.abs(x.ini-finAnt)>1000){ cur=[]; tir.push(cur); } cur.push(x); finAnt=x.fin; });
         tir.forEach(t=>{ const v=t.filter(x=>okU.has(x)); if(v.length) mues.push(v.reduce((a,x)=>a+x.seg,0)/v.length); }); });
       const wk=isoWeekInfo(new Date());
-      if(mues.length>=7){
+      if(mues.length>=(this.minTiradas||7)){
         const med=Math.round(medianaJs(mues));
         await sb.from('tiempos_sku').update({vigente:false}).eq('sku',sku).eq('vigente',true);
         await sb.from('tiempos_sku').upsert({sku, semana:wk.label, ini_semana:wk.monday, mediana_seg:med, n_unidades:mues.length, vigente:true},{onConflict:'sku,semana'});
         this.stdSku[sku]=med;
       }else if(this.stdSku[sku]!==undefined){
-        // ya no llega a 7 tiradas (p. ej. un tiempo de antes con 1 muestra): vuelve al estándar
+        // ya no llega al mínimo de tiradas (p. ej. un tiempo de antes con 1 muestra): vuelve al estándar
         await sb.from('tiempos_sku').update({vigente:false}).eq('sku',sku).eq('vigente',true);
         delete this.stdSku[sku];
       }
