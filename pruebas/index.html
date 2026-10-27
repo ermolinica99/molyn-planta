@@ -323,7 +323,8 @@ main{padding:14px 16px calc(40px + env(safe-area-inset-bottom));max-width:900px;
 .rec-aviso{font-size:15px;border-radius:var(--r-sm);padding:10px 12px;margin-bottom:10px;line-height:1.35}
 .rec-aviso.inf{background:var(--surf2);color:var(--ink2)}.rec-aviso.warn{background:var(--amber-soft);color:var(--amber)}
 .rec-cont{display:flex;align-items:center;gap:10px;margin:6px 0 12px}
-.rec-cont span{font-weight:800;font-size:18px}
+.rec-cont span{font-weight:800;font-size:18px;line-height:1.15}
+.rec-cont span small{display:block;font-size:13px;font-weight:600;color:var(--muted)}
 .rec-cont .stp{display:flex;align-items:center;border:2px solid var(--border);border-radius:var(--r-sm);overflow:hidden;margin-left:auto}
 .rec-cont .stp button{width:58px;min-height:62px;font-size:28px;font-weight:800;background:var(--surf2);color:var(--ink)}
 .rec-cont .stp input{width:96px;min-height:62px;border:0;text-align:center;font-family:var(--mono);font-size:30px;font-weight:800}
@@ -1967,7 +1968,8 @@ const Enc = {
       <div class="rn-t">${esc(med[1]?(+med[1])+' × '+(+med[2]):(this.prodMap[r.sku]||r.sku))}</div><div class="rn-c">${esc(r.sku)}${this.prodMap[r.sku]&&this.prodMap[r.sku]!==r.sku?' · '+esc(this.prodMap[r.sku]):''}</div>
       <div class="rec-nums"><div>Disponibles<b>${r.disp}</b></div><div>Madurando<b>${r.madur}</b></div><div class="tot">En la app<b>${r.total}</b></div></div>
       ${avisos.join('')}
-      <div class="rec-cont"><span>Contado</span><div class="stp"><button onclick="Enc.recPaso(-1)">−</button><input id="recCont" type="number" min="0" inputmode="numeric" value="${contado}" oninput="Enc.recRes()"><button onclick="Enc.recPaso(1)">+</button></div></div>
+      <div class="rec-cont"><span>Maduros<small>disponibles ya</small></span><div class="stp"><button onclick="Enc.recPaso('D',-1)">−</button><input id="recContD" type="number" min="0" inputmode="numeric" value="${r.disp}" oninput="Enc.recRes()"><button onclick="Enc.recPaso('D',1)">+</button></div></div>
+      <div class="rec-cont"><span>Madurando<small>aún en maduración</small></span><div class="stp"><button onclick="Enc.recPaso('M',-1)">−</button><input id="recContM" type="number" min="0" inputmode="numeric" value="${r.madur}" oninput="Enc.recRes()"><button onclick="Enc.recPaso('M',1)">+</button></div></div>
       <div id="recRes"></div>
       <label class="chk" id="recMadWrap" style="display:none"><input type="checkbox" id="recMad"> Las que sobran están madurando</label>
       <button id="recBtn" class="btn-ink full" onclick="Enc.recEnviar()"></button>
@@ -1975,12 +1977,14 @@ const Enc = {
     this.recRes();
     const el=$('#recNuc'); if(el&&el.scrollIntoView) el.scrollIntoView({behavior:'smooth',block:'start'});
   },
-  recPaso(d){ const i=$('#recCont'); i.value=Math.max(0,(parseInt(i.value)||0)+d); this.recRes(); },
+  recPaso(k,d){ const i=$('#recCont'+k); i.value=Math.max(0,(parseInt(i.value)||0)+d); this.recRes(); },
+  recContado(){ const D=Math.max(0,parseInt($('#recContD').value)||0), M=Math.max(0,parseInt($('#recContM').value)||0); return {D,M,c:D+M}; },
   recRes(){
-    const r=this.rec; if(!r) return; const c=Math.max(0,parseInt($('#recCont').value)||0), d=c-r.total;
-    $('#recRes').innerHTML=d===0?'<div class="rec-res ok">✓ Cuadra con la app</div>':d>0?`<div class="rec-res alta">Sobran ${d} respecto a la app</div>`:`<div class="rec-res baja">Faltan ${-d} respecto a la app</div>`;
+    const r=this.rec; if(!r) return; const {D,M,c}=this.recContado(), d=c-r.total, cambia=D!==r.disp||M!==r.madur;
+    const det=`<div style="font-size:14px;font-weight:600;margin-top:4px">Total contado ${c}${cambia&&d===0?' · cambia cuántos están maduros ('+r.disp+' → '+D+')':''}</div>`;
+    $('#recRes').innerHTML=(d===0?(cambia?'<div class="rec-res alta">Mismo total, distinta maduración':'<div class="rec-res ok">✓ Cuadra con la app'):d>0?`<div class="rec-res alta">Sobran ${d} respecto a la app`:`<div class="rec-res baja">Faltan ${-d} respecto a la app`)+det+'</div>';
     $('#recMadWrap').style.display='none';
-    $('#recBtn').textContent=d===0?'✓ Cuadra · guardar y siguiente':`Guardar en el recuento (${d>0?'+':''}${d})`;
+    $('#recBtn').textContent=d===0&&!cambia?'✓ Cuadra · guardar y siguiente':`Guardar en el recuento (${d>0?'+':''}${d})`;
   },
   // ---- recuento: un recuento abierto a la vez (compartido por los encargados); cada núcleo, una línea ----
   async recAbierto(crear){
@@ -1995,15 +1999,15 @@ const Enc = {
     this.recId=ins.data.id; this.recInfo=ins.data; return this.recId;
   },
   async recEnviar(){
-    const r=this.rec; if(!r) return; const c=Math.max(0,parseInt($('#recCont').value)||0);
+    const r=this.rec; if(!r) return; const {D,M,c}=this.recContado();
     const btn=$('#recBtn'); btn.disabled=true;
     try{
       const id=await this.recAbierto(true);
-      const fila={recuento_id:id,sku:r.sku,app_disp:r.disp,app_madur:r.madur,app_total:r.total,contado:c,hoja:r.hoja,contado_por:this.user.id,contado_at:new Date().toISOString(),estado:'pendiente'};
+      const fila={recuento_id:id,sku:r.sku,app_disp:r.disp,app_madur:r.madur,app_total:r.total,contado:c,contado_disp:D,contado_madur:M,hoja:r.hoja,contado_por:this.user.id,contado_at:new Date().toISOString(),estado:'pendiente'};
       const ya=(this.recLineas||[]).find(x=>x.sku===r.sku);
       if(ya&&fila.hoja==null) fila.hoja=ya.hoja; // si se vuelve a contar sin el QR de la hoja, se conserva lo que ponía
       const res=ya?await sb.from('recuento_lineas').update(fila).eq('id',ya.id):await sb.from('recuento_lineas').insert(fila);
-      if(res.error) throw res.error;
+      if(res.error) throw new Error(/contado_disp|contado_madur/.test(res.error.message||'')?'falta volver a ejecutar "Aplicar SQL a PRUEBAS" (columnas nuevas del recuento)':res.error.message);
       const d=c-r.total; toast(d===0?'✓ '+r.sku+' cuadra':r.sku+': '+(d>0?'+':'')+d+' guardado en el recuento','ok');
       this.rec=null; $('#recNuc').innerHTML=''; beep(true,true); await this.recCargar();
     }catch(e){ toast('Error: '+(e.message||e),'err'); btn.disabled=false; }
