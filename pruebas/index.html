@@ -307,6 +307,24 @@ main{padding:14px 16px calc(40px + env(safe-area-inset-bottom));max-width:900px;
 .aj-est.pend{background:var(--amber-soft);color:var(--amber)}
 .aj-est.aprob{background:var(--green-soft);color:#1F5A31}
 .aj-est.rech{background:var(--red-soft);color:var(--red)}
+.rec-nuc{background:var(--surf);border:2px solid var(--ink);border-radius:var(--r);padding:16px;margin:12px 0}
+.rec-nuc .rn-t{font-weight:800;font-size:22px}
+.rec-nuc .rn-c{font-family:var(--mono);font-size:14px;color:var(--muted);margin-top:2px;word-break:break-all}
+.rec-nums{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:14px 0 10px}
+.rec-nums div{background:var(--surf2);border-radius:var(--r-sm);padding:10px;text-align:center;font-size:13px;color:var(--muted);font-weight:600}
+.rec-nums b{display:block;font-family:var(--mono);font-size:30px;color:var(--ink);line-height:1.1}
+.rec-nums .tot{background:var(--ink);color:#fff}.rec-nums .tot b{color:#fff}
+.rec-aviso{font-size:15px;border-radius:var(--r-sm);padding:10px 12px;margin-bottom:10px;line-height:1.35}
+.rec-aviso.inf{background:var(--surf2);color:var(--ink2)}.rec-aviso.warn{background:var(--amber-soft);color:var(--amber)}
+.rec-cont{display:flex;align-items:center;gap:10px;margin:6px 0 12px}
+.rec-cont span{font-weight:800;font-size:18px}
+.rec-cont .stp{display:flex;align-items:center;border:2px solid var(--border);border-radius:var(--r-sm);overflow:hidden;margin-left:auto}
+.rec-cont .stp button{width:58px;min-height:62px;font-size:28px;font-weight:800;background:var(--surf2);color:var(--ink)}
+.rec-cont .stp input{width:96px;min-height:62px;border:0;text-align:center;font-family:var(--mono);font-size:30px;font-weight:800}
+.rec-res{font-size:17px;font-weight:700;border-radius:var(--r-sm);padding:12px;text-align:center;margin-bottom:10px}
+.rec-res.ok{background:var(--green-soft);color:#1F5A31}.rec-res.alta{background:#E1EAEF;color:#2F5566}.rec-res.baja{background:var(--red-soft);color:var(--red)}
+.rec-hecho{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:11px 2px;border-bottom:1px solid var(--border);font-size:15px}
+.rec-hecho .rh-n{font-weight:700;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .loteInput{font-family:var(--mono)!important;font-size:19px!important;font-weight:700!important;min-height:56px}
 input[type=number]{font-family:var(--mono)}
 
@@ -568,6 +586,18 @@ input,.uid,.det-row .v{-webkit-user-select:text;user-select:text}
 
     <!-- INVENTARIO -->
     <section id="secInventario" class="enc-sec hidden">
+      <div class="form-card">
+        <h3 class="sec">Recuento con QR</h3>
+        <div class="vacio" style="padding:0 0 10px;text-align:left">Escanea el QR de la hoja de recuento (o la etiqueta de cualquier núcleo) y verás lo que hay en la app ahora mismo.</div>
+        <div id="readerI" style="width:100%;max-width:420px;margin:0 auto 12px;border-radius:var(--r-sm);overflow:hidden"></div>
+        <div class="scan-row">
+          <input id="manualI" placeholder="Núcleo (SKU) o etiqueta" list="nucList" autocomplete="off">
+          <button class="btn-terra" onclick="Enc.recManual()">Ver</button>
+        </div>
+        <div class="scan-tools"><button id="camBtnI" class="btn-ghost" onclick="Enc.toggleCam()"></button></div>
+        <div id="recNuc"></div>
+        <div id="recHechos"></div>
+      </div>
       <div class="form-card">
         <h3 class="sec">Proponer ajuste</h3>
         <div class="frow">
@@ -1698,7 +1728,7 @@ const Enc = {
   },
 
   pintarIconos(){
-    $('#camBtnC').innerHTML=ICO.cam+'Cámara';
+    $('#camBtnC').innerHTML=ICO.cam+'Cámara'; $('#camBtnI').innerHTML=ICO.cam+'Cámara';
     document.querySelectorAll('#secOperarios .btn-ghost.sm, #secLotes .btn-ghost.sm').forEach(b=>{ b.innerHTML=ICO.refresh; });
   },
 
@@ -1708,7 +1738,8 @@ const Enc = {
     ['consumo','stock','operarios','inventario','partes','lotes'].forEach(s=>{
       $('#sec'+s.charAt(0).toUpperCase()+s.slice(1)).classList.toggle('hidden', s!==sec);
     });
-    if(sec!=='consumo' && this.camOn) this.stopCam();
+    if(this.camOn && this.camSec!==sec) this.stopCam();
+    if(sec==='inventario') this.pintarRecHechos();
     if(sec==='stock') this.loadStock();
     if(sec==='operarios') this.loadOperarios();
     if(sec==='inventario') this.loadAjustes();
@@ -1893,6 +1924,85 @@ const Enc = {
     }
   },
 
+  // ---------- RECUENTO CON QR ----------
+  // El QR de la hoja de Oficina es MOLYN-INV:<núcleo>|<total al imprimir>|<fecha>. También vale la etiqueta de una
+  // unidad (se busca su núcleo) o escribir el SKU. Enseña lo que hay AHORA en la app (disponibles + madurando) y,
+  // con lo contado, propone: cuadra / pedir alta / pedir baja (peticiones que aprueba Oficina, como el formulario).
+  recManual(){ const c=$('#manualI').value.trim(); if(c){ $('#manualI').value=''; this.recScan(c); } },
+  async recScan(txt){
+    txt=String(txt||'').trim(); let sku=null, hoja=null, fechaHoja=null;
+    const m=/^MOLYN-INV:(.+)$/i.exec(txt);
+    try{
+      if(m){ const p=m[1].split('|'); sku=p[0].trim().toUpperCase(); hoja=p[1]!==undefined&&p[1]!==''?Number(p[1]):null; fechaHoja=p[2]||null; }
+      else{ const c=txt.toUpperCase();
+        if(this.prodMap[c]) sku=c;
+        else{ const {data}=await sb.from('unidades').select('sku').eq('id',c).limit(1); if(data&&data.length) sku=data[0].sku; } }
+      if(!sku){ toast('Código no reconocido: '+txt,'err'); beep(false); return; }
+      const [uds,pets]=await Promise.all([
+        selAll(()=>sb.from('unidades').select('estado,fabricada_at').eq('sku',sku).in('estado',['stock','pendiente']),['id']),
+        sb.from('ajustes_inventario').select('tipo,cantidad').eq('sku',sku).eq('estado','pendiente').then(r=>r.data||[]).catch(()=>[])]);
+      const now=Date.now(), madms=this.mad*86400000; let disp=0,madur=0,fab=0;
+      uds.forEach(u=>{ if(u.estado==='pendiente'){ fab++; return; } const f=u.fabricada_at?new Date(u.fabricada_at).getTime():0; if(f&&now-f>=madms) disp++; else madur++; });
+      this.rec={sku,disp,madur,total:disp+madur,fab,hoja,fechaHoja,pets};
+      beep(true); this.pintarRec(this.rec.total);
+    }catch(e){ toast('Error: '+(e.message||e),'err'); }
+  },
+  pintarRec(contado){
+    const r=this.rec; if(!r) return;
+    const med=(r.sku.replace(/^N\d{3}/,'').match(/(\d{2,3})\s*[xX]\s*(\d{3})/)||[]);
+    const fHoja=r.fechaHoja?new Date(r.fechaHoja).toLocaleString('es-ES',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}):'';
+    const avisos=[];
+    if(r.hoja!=null) avisos.push(r.hoja===r.total?`<div class="rec-aviso inf">En la hoja (${esc(fHoja)}) ponía <b>${r.hoja}</b>: no ha cambiado.</div>`
+      :`<div class="rec-aviso warn">En la hoja (${esc(fHoja)}) ponía <b>${r.hoja}</b> y ahora hay <b>${r.total}</b>: se ha fabricado o consumido desde que se imprimió. Cuenta lo que hay ahora.</div>`);
+    if(r.pets.length) avisos.push(`<div class="rec-aviso warn">Ya hay ${r.pets.length===1?'una petición':r.pets.length+' peticiones'} pendiente${r.pets.length===1?'':'s'} de este núcleo en oficina (${r.pets.map(p=>(p.tipo==='alta'?'alta ':p.tipo==='baja'?'baja ':'OT ')+Math.abs(p.cantidad)).join(', ')}). Cuando la aprueben, cambiará lo que ves.</div>`);
+    if(r.fab) avisos.push(`<div class="rec-aviso inf">Además hay <b>${r.fab}</b> fabricándose (no cuentan: aún no están en el almacén).</div>`);
+    $('#recNuc').innerHTML=`<div class="rec-nuc">
+      <div class="rn-t">${esc(med[1]?(+med[1])+' × '+(+med[2]):(this.prodMap[r.sku]||r.sku))}</div><div class="rn-c">${esc(r.sku)}${this.prodMap[r.sku]&&this.prodMap[r.sku]!==r.sku?' · '+esc(this.prodMap[r.sku]):''}</div>
+      <div class="rec-nums"><div>Disponibles<b>${r.disp}</b></div><div>Madurando<b>${r.madur}</b></div><div class="tot">En la app<b>${r.total}</b></div></div>
+      ${avisos.join('')}
+      <div class="rec-cont"><span>Contado</span><div class="stp"><button onclick="Enc.recPaso(-1)">−</button><input id="recCont" type="number" min="0" inputmode="numeric" value="${contado}" oninput="Enc.recRes()"><button onclick="Enc.recPaso(1)">+</button></div></div>
+      <div id="recRes"></div>
+      <label class="chk" id="recMadWrap" style="display:none"><input type="checkbox" id="recMad"> Las que sobran están madurando</label>
+      <button id="recBtn" class="btn-ink full" onclick="Enc.recEnviar()"></button>
+    </div>`;
+    this.recRes();
+    const el=$('#recNuc'); if(el&&el.scrollIntoView) el.scrollIntoView({behavior:'smooth',block:'start'});
+  },
+  recPaso(d){ const i=$('#recCont'); i.value=Math.max(0,(parseInt(i.value)||0)+d); this.recRes(); },
+  recRes(){
+    const r=this.rec; if(!r) return; const c=Math.max(0,parseInt($('#recCont').value)||0), d=c-r.total;
+    $('#recRes').innerHTML=d===0?'<div class="rec-res ok">✓ Cuadra con la app</div>':d>0?`<div class="rec-res alta">Sobran ${d}: se pide un alta de ${d}</div>`:`<div class="rec-res baja">Faltan ${-d}: se pide una baja de ${-d}</div>`;
+    $('#recMadWrap').style.display=d>0?'':'none';
+    $('#recBtn').textContent=d===0?'✓ Está bien, siguiente':d>0?`+ Pedir alta de ${d}`:`− Pedir baja de ${-d}`;
+  },
+  async recEnviar(){
+    const r=this.rec; if(!r) return; const c=Math.max(0,parseInt($('#recCont').value)||0), d=c-r.total;
+    const btn=$('#recBtn'); btn.disabled=true;
+    try{
+      if(d!==0){
+        const nota='Recuento: contados '+c+', en la app '+r.total+(r.hoja!=null?' (hoja: '+r.hoja+')':'');
+        const row={sku:r.sku,tipo:d>0?'alta':'baja',cantidad:Math.abs(d),madurar:d>0?!!($('#recMad')&&$('#recMad').checked):false,estado:'pendiente',solicitado_por:this.user.id,nota};
+        const {error}=await sb.from('ajustes_inventario').insert(row); if(error) throw error;
+        toast((d>0?'Alta':'Baja')+' de '+Math.abs(d)+' enviada a oficina','ok');
+      }else toast('✓ '+r.sku+' cuadra','ok');
+      this.recGuardar({sku:r.sku,app:r.total,contado:c,dif:d,t:Date.now()});
+      this.rec=null; $('#recNuc').innerHTML=''; this.pintarRecHechos(); this.loadAjustes(); beep(true,true);
+    }catch(e){ toast('Error: '+(e.message||e),'err'); btn.disabled=false; }
+  },
+  // lo revisado hoy se guarda en este móvil (para ver el avance; las altas y bajas van a oficina)
+  recKey(){ const d=new Date(); return 'recuento:'+d.getFullYear()+'-'+(d.getMonth()+1)+'-'+d.getDate(); },
+  recLeer(){ try{ return JSON.parse(localStorage.getItem(this.recKey())||'[]'); }catch(e){ return []; } },
+  recGuardar(x){ const a=this.recLeer().filter(y=>y.sku!==x.sku); a.unshift(x); try{ localStorage.setItem(this.recKey(),JSON.stringify(a)); }catch(e){} },
+  pintarRecHechos(){
+    const a=this.recLeer(), el=$('#recHechos'); if(!el) return;
+    if(!a.length){ el.innerHTML=''; return; }
+    const ok=a.filter(x=>x.dif===0).length;
+    el.innerHTML=`<h3 class="sec" style="margin-top:16px">Revisados hoy <span class="pill-count">${a.length}</span></h3>
+      <div style="font-size:14px;color:var(--muted);margin-bottom:4px">${ok} cuadran · ${a.length-ok} con diferencia (enviadas a oficina)</div>
+      ${a.map(x=>`<div class="rec-hecho"><span class="rh-n">${esc(x.sku)}</span><span style="font-family:var(--mono);font-weight:800;color:${x.dif===0?'var(--green)':x.dif>0?'#2F5566':'var(--red)'}">${x.dif===0?'✓ '+x.contado:(x.dif>0?'+':'')+x.dif+' ('+x.contado+')'}</span></div>`).join('')}
+      <button class="btn-ghost sm" style="margin-top:10px" onclick="if(confirm('¿Empezar un recuento nuevo? Se borra la lista de revisados de hoy en este móvil (las peticiones ya enviadas no se tocan).')){try{localStorage.removeItem(Enc.recKey());}catch(e){} Enc.pintarRecHechos();}">Empezar de nuevo</button>`;
+  },
+
   // ---------- INVENTARIO ----------
   setTipo(t){
     this.ajTipo=t;
@@ -2048,21 +2158,25 @@ const Enc = {
   },
 
   // ---------- cámara ----------
+  // la cámara sirve en Consumo (añade a la lista) y en Inventario (recuento con QR)
   async toggleCam(){
     if(this.camOn){ await this.stopCam(); return; }
-    $('#readerC').innerHTML='';
+    const rec=this.sec==='inventario', el=rec?'readerI':'readerC';
+    $('#'+el).innerHTML='';
     try{
-      this.cam=new Html5Qrcode('readerC',{verbose:false});
+      this.cam=new Html5Qrcode(el,{verbose:false}); this.camSec=this.sec;
       const cfg={fps:10,qrbox:{width:230,height:230},aspectRatio:1.0};
-      const onScan=txt=>{ const now=Date.now(); if(txt===this.lastScan.code && now-this.lastScan.t<3000) return; this.lastScan={code:txt,t:now}; this.addCart(txt); };
+      const onScan=txt=>{ const now=Date.now(); if(txt===this.lastScan.code && now-this.lastScan.t<3000) return; this.lastScan={code:txt,t:now}; rec?this.recScan(txt):this.addCart(txt); };
       try{ await this.cam.start({facingMode:'environment'},cfg,onScan,()=>{}); }
       catch(e1){ const cams=await Html5Qrcode.getCameras(); if(cams&&cams.length){ await this.cam.start(cams[cams.length-1].id,cfg,onScan,()=>{}); } else throw e1; }
-      this.camOn=true; $('#camBtnC').innerHTML=ICO.camOff+'Apagar';
-    }catch(e){ toast('No se pudo abrir la cámara: '+(e.message||e),'err'); $('#readerC').innerHTML=''; }
+      this.camOn=true; $(rec?'#camBtnI':'#camBtnC').innerHTML=ICO.camOff+'Apagar';
+    }catch(e){ toast('No se pudo abrir la cámara: '+(e.message||e),'err'); $('#'+el).innerHTML=''; }
   },
   async stopCam(){
     try{ if(this.cam){ await this.cam.stop(); this.cam.clear(); } }catch(e){}
-    this.camOn=false; this.cam=null; $('#camBtnC').innerHTML=ICO.cam+'Cámara'; $('#readerC').innerHTML='';
+    this.camOn=false; this.cam=null; this.camSec=null;
+    $('#camBtnC').innerHTML=ICO.cam+'Cámara'; $('#readerC').innerHTML='';
+    $('#camBtnI').innerHTML=ICO.cam+'Cámara'; $('#readerI').innerHTML='';
   }
 };
 
