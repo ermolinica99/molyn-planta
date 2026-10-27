@@ -589,8 +589,11 @@ input,.uid,.det-row .v{-webkit-user-select:text;user-select:text}
     <!-- INVENTARIO -->
     <section id="secInventario" class="enc-sec hidden">
       <div class="form-card">
-        <h3 class="sec">Recuento con QR</h3>
-        <div class="vacio" style="padding:0 0 10px;text-align:left">Escanea el QR de la hoja de recuento (o la etiqueta de cualquier núcleo) y verás lo que hay en la app ahora mismo.</div>
+        <h3 class="sec">Recuento</h3>
+        <div id="recCab"></div>
+        <div id="recCiclo"></div>
+        <div id="recPistas"></div>
+        <div class="vacio" style="padding:0 0 10px;text-align:left">Escanea el QR de la hoja de recuento, la etiqueta de cualquier núcleo o escribe el núcleo, y verás lo que hay en la app ahora mismo. Lo contado se guarda en el recuento; oficina lo revisa antes de cambiar el stock.</div>
         <div id="readerI" style="width:100%;max-width:420px;margin:0 auto 12px;border-radius:var(--r-sm);overflow:hidden"></div>
         <div class="scan-row">
           <input id="manualI" placeholder="Núcleo (SKU) o etiqueta" list="nucList" autocomplete="off">
@@ -601,11 +604,11 @@ input,.uid,.det-row .v{-webkit-user-select:text;user-select:text}
         <div id="recHechos"></div>
       </div>
       <div class="form-card">
-        <h3 class="sec">Proponer ajuste</h3>
-        <div class="frow">
-          <button id="tipoAlta" class="seg on" onclick="Enc.setTipo('alta')">Sobran (alta)</button>
+        <h3 class="sec">Sobran etiquetas en una OT</h3>
+        <div class="frow" style="display:none">
+          <button id="tipoAlta" class="seg" onclick="Enc.setTipo('alta')">Sobran (alta)</button>
           <button id="tipoBaja" class="seg" onclick="Enc.setTipo('baja')">Faltan (baja)</button>
-          <button id="tipoOT" class="seg" onclick="Enc.setTipo('ot')">OT: salieron menos</button>
+          <button id="tipoOT" class="seg on" onclick="Enc.setTipo('ot')">OT: salieron menos</button>
         </div>
         <div id="ajOTWrap" style="display:none">
           <input id="ajOT" class="buscar" placeholder="OT (ej. OT00022)…" list="otList" autocomplete="off">
@@ -1741,7 +1744,7 @@ const Enc = {
       $('#sec'+s.charAt(0).toUpperCase()+s.slice(1)).classList.toggle('hidden', s!==sec);
     });
     if(this.camOn && this.camSec!==sec) this.stopCam();
-    if(sec==='inventario') this.pintarRecHechos();
+    if(sec==='inventario'){ this.setTipo('ot'); this.recCargar(); }
     if(sec==='stock') this.loadStock();
     if(sec==='operarios') this.loadOperarios();
     if(sec==='inventario') this.loadAjustes();
@@ -1958,6 +1961,8 @@ const Enc = {
       :`<div class="rec-aviso warn">En la hoja (${esc(fHoja)}) ponía <b>${r.hoja}</b> y ahora hay <b>${r.total}</b>: se ha fabricado o consumido desde que se imprimió. Cuenta lo que hay ahora.</div>`);
     if(r.pets.length) avisos.push(`<div class="rec-aviso warn">Ya hay ${r.pets.length===1?'una petición':r.pets.length+' peticiones'} pendiente${r.pets.length===1?'':'s'} de este núcleo en oficina (${r.pets.map(p=>(p.tipo==='alta'?'alta ':p.tipo==='baja'?'baja ':'OT ')+Math.abs(p.cantidad)).join(', ')}). Cuando la aprueben, cambiará lo que ves.</div>`);
     if(r.fab) avisos.push(`<div class="rec-aviso inf">Además hay <b>${r.fab}</b> fabricándose (no cuentan: aún no están en el almacén).</div>`);
+    const pi=this._pistas&&this._pistas[r.sku]; if(pi) avisos.push(`<div class="rec-aviso warn">Este núcleo tiene ${pi.etq?pi.etq+' etiquetas sin terminar desde hace días':''}${pi.etq&&pi.res?' y ':''}${pi.res?pi.res+' reservas viejas sin consumir':''}: puede ser la causa si no cuadra.</div>`);
+    const ya=(this.recLineas||[]).find(x=>x.sku===r.sku); if(ya) avisos.push(`<div class="rec-aviso inf">Ya lo contaste en este recuento: <b>${ya.contado}</b>. Si lo guardas otra vez, se sustituye.</div>`);
     $('#recNuc').innerHTML=`<div class="rec-nuc">
       <div class="rn-t">${esc(med[1]?(+med[1])+' × '+(+med[2]):(this.prodMap[r.sku]||r.sku))}</div><div class="rn-c">${esc(r.sku)}${this.prodMap[r.sku]&&this.prodMap[r.sku]!==r.sku?' · '+esc(this.prodMap[r.sku]):''}</div>
       <div class="rec-nums"><div>Disponibles<b>${r.disp}</b></div><div>Madurando<b>${r.madur}</b></div><div class="tot">En la app<b>${r.total}</b></div></div>
@@ -1973,36 +1978,121 @@ const Enc = {
   recPaso(d){ const i=$('#recCont'); i.value=Math.max(0,(parseInt(i.value)||0)+d); this.recRes(); },
   recRes(){
     const r=this.rec; if(!r) return; const c=Math.max(0,parseInt($('#recCont').value)||0), d=c-r.total;
-    $('#recRes').innerHTML=d===0?'<div class="rec-res ok">✓ Cuadra con la app</div>':d>0?`<div class="rec-res alta">Sobran ${d}: se pide un alta de ${d}</div>`:`<div class="rec-res baja">Faltan ${-d}: se pide una baja de ${-d}</div>`;
-    $('#recMadWrap').style.display=d>0?'':'none';
-    $('#recBtn').textContent=d===0?'✓ Está bien, siguiente':d>0?`+ Pedir alta de ${d}`:`− Pedir baja de ${-d}`;
+    $('#recRes').innerHTML=d===0?'<div class="rec-res ok">✓ Cuadra con la app</div>':d>0?`<div class="rec-res alta">Sobran ${d} respecto a la app</div>`:`<div class="rec-res baja">Faltan ${-d} respecto a la app</div>`;
+    $('#recMadWrap').style.display='none';
+    $('#recBtn').textContent=d===0?'✓ Cuadra · guardar y siguiente':`Guardar en el recuento (${d>0?'+':''}${d})`;
+  },
+  // ---- recuento: un recuento abierto a la vez (compartido por los encargados); cada núcleo, una línea ----
+  async recAbierto(crear){
+    if(this.recId) return this.recId;
+    const {data,error}=await sb.from('recuentos').select('id,tipo,creado_at').eq('estado','abierto').order('creado_at',{ascending:false}).limit(1);
+    if(error) throw new Error(/recuento/.test(error.message)?'falta ejecutar 01_recuentos.sql en la base de pruebas':error.message);
+    if(data&&data.length){ this.recId=data[0].id; this.recInfo=data[0]; return this.recId; }
+    if(!crear) return null;
+    const tipo=this.recEsDiaCiclo()?'ciclico':'completo';
+    const ins=await sb.from('recuentos').insert({tipo,estado:'abierto',creado_por:this.user.id,creado_at:new Date().toISOString()}).select().single();
+    if(ins.error) throw ins.error;
+    this.recId=ins.data.id; this.recInfo=ins.data; return this.recId;
   },
   async recEnviar(){
-    const r=this.rec; if(!r) return; const c=Math.max(0,parseInt($('#recCont').value)||0), d=c-r.total;
+    const r=this.rec; if(!r) return; const c=Math.max(0,parseInt($('#recCont').value)||0);
     const btn=$('#recBtn'); btn.disabled=true;
     try{
-      if(d!==0){
-        const nota='Recuento: contados '+c+', en la app '+r.total+(r.hoja!=null?' (hoja: '+r.hoja+')':'');
-        const row={sku:r.sku,tipo:d>0?'alta':'baja',cantidad:Math.abs(d),madurar:d>0?!!($('#recMad')&&$('#recMad').checked):false,estado:'pendiente',solicitado_por:this.user.id,nota};
-        const {error}=await sb.from('ajustes_inventario').insert(row); if(error) throw error;
-        toast((d>0?'Alta':'Baja')+' de '+Math.abs(d)+' enviada a oficina','ok');
-      }else toast('✓ '+r.sku+' cuadra','ok');
-      this.recGuardar({sku:r.sku,app:r.total,contado:c,dif:d,t:Date.now()});
-      this.rec=null; $('#recNuc').innerHTML=''; this.pintarRecHechos(); this.loadAjustes(); beep(true,true);
+      const id=await this.recAbierto(true);
+      const fila={recuento_id:id,sku:r.sku,app_disp:r.disp,app_madur:r.madur,app_total:r.total,contado:c,hoja:r.hoja,contado_por:this.user.id,contado_at:new Date().toISOString(),estado:'pendiente'};
+      const ya=(this.recLineas||[]).find(x=>x.sku===r.sku);
+      if(ya&&fila.hoja==null) fila.hoja=ya.hoja; // si se vuelve a contar sin el QR de la hoja, se conserva lo que ponía
+      const res=ya?await sb.from('recuento_lineas').update(fila).eq('id',ya.id):await sb.from('recuento_lineas').insert(fila);
+      if(res.error) throw res.error;
+      const d=c-r.total; toast(d===0?'✓ '+r.sku+' cuadra':r.sku+': '+(d>0?'+':'')+d+' guardado en el recuento','ok');
+      this.rec=null; $('#recNuc').innerHTML=''; beep(true,true); await this.recCargar();
     }catch(e){ toast('Error: '+(e.message||e),'err'); btn.disabled=false; }
   },
-  // lo revisado hoy se guarda en este móvil (para ver el avance; las altas y bajas van a oficina)
-  recKey(){ const d=new Date(); return 'recuento:'+d.getFullYear()+'-'+(d.getMonth()+1)+'-'+d.getDate(); },
-  recLeer(){ try{ return JSON.parse(localStorage.getItem(this.recKey())||'[]'); }catch(e){ return []; } },
-  recGuardar(x){ const a=this.recLeer().filter(y=>y.sku!==x.sku); a.unshift(x); try{ localStorage.setItem(this.recKey(),JSON.stringify(a)); }catch(e){} },
+  async recQuitar(id){
+    if(!confirm('¿Quitar este núcleo del recuento?')) return;
+    try{ const {error}=await sb.from('recuento_lineas').delete().eq('id',id); if(error) throw error; await this.recCargar(); }catch(e){ toast('Error: '+(e.message||e),'err'); }
+  },
+  async recTerminar(){
+    const n=(this.recLineas||[]).length; if(!n) return;
+    const dif=(this.recLineas||[]).filter(x=>x.contado!==x.app_total).length;
+    if(!confirm(`¿Terminar el recuento y mandarlo a oficina?\n\n${n} núcleos contados · ${dif} con diferencia.\n\nOficina lo revisará contigo antes de cambiar el stock.`)) return;
+    try{
+      const {error}=await sb.from('recuentos').update({estado:'terminado',terminado_at:new Date().toISOString()}).eq('id',this.recId); if(error) throw error;
+      toast('Recuento enviado a oficina','ok'); this.recId=null; this.recInfo=null; await this.recCargar();
+    }catch(e){ toast('Error: '+(e.message||e),'err'); }
+  },
+  async recCargar(){
+    try{
+      this.recId=null; const id=await this.recAbierto(false);
+      this.recLineas=id?await selAll(()=>sb.from('recuento_lineas').select('*').eq('recuento_id',id),['id']):[];
+    }catch(e){ this.recLineas=[]; $('#recCab').innerHTML='<div class="rec-aviso warn">'+esc(e.message||e)+'</div>'; return; }
+    this.pintarRecHechos(); this.recPintarCiclo(); this.recPintarPistas();
+  },
   pintarRecHechos(){
-    const a=this.recLeer(), el=$('#recHechos'); if(!el) return;
+    const a=(this.recLineas||[]).slice().sort((x,y)=>String(y.contado_at).localeCompare(String(x.contado_at)));
+    const cab=$('#recCab'), el=$('#recHechos'); if(!el) return;
+    cab.innerHTML=this.recInfo?`<div class="rec-aviso inf">Recuento ${this.recInfo.tipo==='ciclico'?'cíclico':''} abierto desde el <b>${new Date(this.recInfo.creado_at).toLocaleString('es-ES',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})}</b> · ${a.length} núcleos contados</div>`:'';
     if(!a.length){ el.innerHTML=''; return; }
-    const ok=a.filter(x=>x.dif===0).length;
-    el.innerHTML=`<h3 class="sec" style="margin-top:16px">Revisados hoy <span class="pill-count">${a.length}</span></h3>
-      <div style="font-size:14px;color:var(--muted);margin-bottom:4px">${ok} cuadran · ${a.length-ok} con diferencia (enviadas a oficina)</div>
-      ${a.map(x=>`<div class="rec-hecho"><span class="rh-n">${esc(x.sku)}</span><span style="font-family:var(--mono);font-weight:800;color:${x.dif===0?'var(--green)':x.dif>0?'#2F5566':'var(--red)'}">${x.dif===0?'✓ '+x.contado:(x.dif>0?'+':'')+x.dif+' ('+x.contado+')'}</span></div>`).join('')}
-      <button class="btn-ghost sm" style="margin-top:10px" onclick="if(confirm('¿Empezar un recuento nuevo? Se borra la lista de revisados de hoy en este móvil (las peticiones ya enviadas no se tocan).')){try{localStorage.removeItem(Enc.recKey());}catch(e){} Enc.pintarRecHechos();}">Empezar de nuevo</button>`;
+    const ok=a.filter(x=>x.contado===x.app_total).length;
+    el.innerHTML=`<h3 class="sec" style="margin-top:16px">Contados en este recuento <span class="pill-count">${a.length}</span></h3>
+      <div style="font-size:14px;color:var(--muted);margin-bottom:4px">${ok} cuadran · ${a.length-ok} con diferencia · toca uno para volver a contarlo</div>
+      ${a.map(x=>{ const d=x.contado-x.app_total; return `<div class="rec-hecho"><span class="rh-n" style="cursor:pointer" onclick="Enc.recScan('${esc(x.sku).replace(/'/g,"\\'")}')">${esc(x.sku)}</span>
+        <span style="display:flex;align-items:center;gap:10px"><span style="font-family:var(--mono);font-weight:800;color:${d===0?'var(--green)':d>0?'#2F5566':'var(--red)'}">${d===0?'✓ '+x.contado:(d>0?'+':'')+d+' ('+x.contado+')'}</span>
+        <button class="btn-ghost sm" style="min-height:40px;padding:6px 12px" onclick="Enc.recQuitar(${x.id})">${ICO.x}</button></span></div>`; }).join('')}
+      <button class="btn-ink full" style="margin-top:14px" onclick="Enc.recTerminar()">Terminar recuento y mandar a oficina</button>`;
+  },
+  // ---- recuento cíclico: dos días por semana se proponen unos pocos núcleos para contar ----
+  // CICLO_DIAS: 1 = lunes … 4 = jueves. CICLO_N: cuántos núcleos se proponen.
+  CICLO_DIAS:[1,4], CICLO_N:5,
+  recEsDiaCiclo(){ return this.CICLO_DIAS.includes(new Date().getDay()); },
+  async recPintarCiclo(forzar){
+    const el=$('#recCiclo'); if(!el) return;
+    const nombres=['domingo','lunes','martes','miércoles','jueves','viernes','sábado'];
+    if(!this.recEsDiaCiclo()&&!forzar){
+      const prox=[1,2,3,4,5,6,7].map(k=>(new Date().getDay()+k)%7).find(d=>this.CICLO_DIAS.includes(d));
+      el.innerHTML=`<div class="rec-aviso inf" style="display:flex;align-items:center;gap:10px">Próximo recuento cíclico: <b>${nombres[prox]}</b><button class="btn-ghost sm" style="margin-left:auto;min-height:40px;padding:6px 12px;font-size:14px" onclick="Enc.recPintarCiclo(true)">Ver propuesta</button></div>`; return; }
+    try{
+      if(!this.recProp||Date.now()-this.recProp.t>10*60000) this.recProp={t:Date.now(),lista:await this.recProponer()};
+      const hechos=new Set((this.recLineas||[]).map(x=>x.sku)), L=this.recProp.lista;
+      const n=L.filter(x=>hechos.has(x.sku)).length;
+      el.innerHTML=`<div class="form-card" style="border:2px solid var(--terra);box-shadow:none">
+        <div style="display:flex;align-items:center;gap:8px"><b style="font-size:17px">Hoy toca contar</b><span class="pill-count" style="margin-left:auto">${n}/${L.length}</span></div>
+        <div style="font-size:14px;color:var(--muted);margin:2px 0 8px">Recuento cíclico: los que más se mueven, los que hace más que no se cuentan y los que tienen algo raro.</div>
+        ${L.map(x=>`<div class="rec-hecho" style="cursor:pointer" onclick="Enc.recScan('${esc(x.sku).replace(/'/g,"\\'")}')"><span class="rh-n">${hechos.has(x.sku)?'✓ ':''}${esc(x.sku)}</span><span style="font-size:13px;color:var(--muted);text-align:right">${esc(x.por)}</span></div>`).join('')||'<div class="vacio">Nada que proponer.</div>'}</div>`;
+    }catch(e){ el.innerHTML=''; }
+  },
+  async recProponer(){
+    const ahora=Date.now(), D=86400000, desde=new Date(ahora-14*D).toISOString();
+    const [stock,cons,lin,piste]=await Promise.all([
+      selAll(()=>sb.from('unidades').select('sku').eq('estado','stock'),['id']),
+      selAll(()=>sb.from('unidades').select('sku').eq('estado','consumida').gte('consumida_at',desde),['id']).catch(()=>[]),
+      selAll(()=>sb.from('recuento_lineas').select('sku,contado_at'),['id']).catch(()=>[]),
+      this.recPistas()]);
+    const st={},co={},ult={}; stock.forEach(u=>st[u.sku]=(st[u.sku]||0)+1); cons.forEach(u=>co[u.sku]=(co[u.sku]||0)+1);
+    lin.forEach(l=>{ const t=new Date(l.contado_at).getTime(); if(!ult[l.sku]||t>ult[l.sku]) ult[l.sku]=t; });
+    const cand=new Set([...Object.keys(st),...Object.keys(piste.porSku)]);
+    return [...cand].filter(s=>!(ult[s]&&ahora-ult[s]<3*D)).map(s=>{
+      const dias=ult[s]?Math.floor((ahora-ult[s])/D):null, p=piste.porSku[s];
+      const score=(co[s]||0)+Math.min(dias??30,30)*0.5+(p?20:0);
+      const por=p?(p.etq?p.etq+' etiquetas sin cerrar':'')+(p.etq&&p.res?' · ':'')+(p.res?p.res+' reservas viejas':''):(co[s]?co[s]+' gastados en 14 días':'')+(dias==null?(co[s]?' · ':'')+'nunca contado':(dias>=7?' · '+dias+' días sin contar':''));
+      return {sku:s,score,por}; }).sort((a,b)=>b.score-a.score).slice(0,this.CICLO_N);
+  },
+  // ---- pistas de por qué puede no cuadrar: etiquetas sin cerrar y reservas viejas sin consumir ----
+  ETQ_DIAS:3, RES_DIAS:7,
+  async recPistas(){
+    const D=86400000;
+    const [etq,res]=await Promise.all([
+      selAll(()=>sb.from('unidades').select('sku,ot').eq('estado','pendiente').lt('lanzada_at',new Date(Date.now()-this.ETQ_DIAS*D).toISOString()),['id']).catch(()=>[]),
+      selAll(()=>sb.from('reservas').select('sku,cantidad').eq('estado','pendiente').lt('created_at',new Date(Date.now()-this.RES_DIAS*D).toISOString()),['id']).catch(()=>[])]);
+    const porSku={}; etq.forEach(u=>{ const x=porSku[u.sku]||(porSku[u.sku]={etq:0,res:0}); x.etq++; });
+    res.forEach(r=>{ const x=porSku[r.sku]||(porSku[r.sku]={etq:0,res:0}); x.res+=Number(r.cantidad)||0; });
+    return {etq:etq.length,res:res.reduce((a,r)=>a+(Number(r.cantidad)||0),0),porSku};
+  },
+  async recPintarPistas(){
+    const el=$('#recPistas'); if(!el) return;
+    try{ const p=await this.recPistas(); this._pistas=p.porSku;
+      el.innerHTML=(p.etq||p.res)?`<div class="rec-aviso warn">Ojo: hay <b>${p.etq}</b> etiquetas lanzadas hace más de ${this.ETQ_DIAS} días sin terminar${p.res?` y <b>${p.res}</b> núcleos reservados hace más de ${this.RES_DIAS} días sin consumir`:''}. Si se fabricaron o se gastaron sin escanear, el stock no cuadrará: avisa a oficina.</div>`:'';
+    }catch(e){ el.innerHTML=''; }
   },
 
   // ---------- INVENTARIO ----------
@@ -2026,6 +2116,7 @@ const Enc = {
   // desde "Partes": prepara la petición de esa OT (sobran etiquetas / salió una de más)
   pedirDesdeOT(btn,tipo){
     const ot=btn.dataset.ot, sku=btn.dataset.sku;
+    if(tipo==='alta'){ this.go('inventario'); this.recScan(sku); toast('Cuenta los que hay de '+sku+' y guárdalo en el recuento'); return; }
     this.go('inventario'); this.setTipo(tipo);
     if(tipo==='ot'){ $('#ajOT').value=ot; }
     else{ $('#ajNuc').value=sku; $('#ajMadur').checked=true; $('#ajNota').value='Salió de más en '+ot; }
