@@ -998,7 +998,7 @@ const Op = {
   serie:null, serieSel:0,
   paro:null, paroInicio:null, prodMap:{}, cam:null, camOn:false,
   lastScan:{code:null, t:0}, ticking:false,
-  turno:null, turnoInicio:null, paradasSeg:0, paradasSesion:[], cfg:{descanso_min:60}, stdSku:{}, provisional:new Set(),
+  turno:null, turnoInicio:null, paradasSeg:0, paradasSesion:[], cfg:{descanso_min:60}, stdSku:{},
   lastActivityTs:null,
 
   async init(u){
@@ -1013,11 +1013,11 @@ const Op = {
     });
     (prods||[]).forEach(p=>this.prodMap[p.sku]=p.nombre);
     await this.clasificarNucleos();
-    const ts=await readCached('tiempos_vig', async()=>{
-      const {data}=await sb.from('tiempos_sku').select('sku,mediana_seg,semana').eq('vigente',true); return data;
+    const ts=await readCached('tiempos_vig2', async()=>{
+      const {data}=await sb.from('tiempos_sku').select('sku,mediana_seg,n_unidades').eq('vigente',true); return data;
     });
-    const semActual=isoWeekInfo(new Date()).label;
-    (ts||[]).forEach(t=>{ this.stdSku[t.sku]=Number(t.mediana_seg); if(t.semana===semActual) this.provisional.add(t.sku); });
+    // solo los tiempos con 7 unidades normales o más; el resto usa el estándar del programa
+    (ts||[]).forEach(t=>{ if(Number(t.n_unidades)>=7 && Number(t.mediana_seg)>0) this.stdSku[t.sku]=Number(t.mediana_seg); });
     this.tiempoTeoricoPrograma={};
     try{
       const {data:lp}=await sb.from('lotes_programa').select('programa,tiempo_teorico_seg');
@@ -1301,7 +1301,7 @@ const Op = {
       toast(count+' uds terminadas · '+fmtDur(per)+' c/u','ok'); beep(true,true);
       this.serie=null; this.serieSel=0; this.clearSerie();
       this.markActivity();
-      if(sku && (this.stdSku[sku]===undefined || this.provisional.has(sku))) this.aprenderTiempo(sku);
+      if(sku) this.aprenderTiempo(sku);
       this.autoPreparacion();
       this.render();
     }finally{ this._terminando=false; }
@@ -1334,32 +1334,44 @@ const Op = {
     this.ultimas.unshift({unidad_id:code,sku:it.sku,seg}); this.ultimas=this.ultimas.slice(0,10);
     toast('Terminada '+code+' ('+fmtDur(seg)+')','ok'); beep(true,true);
     this.markActivity();
-    if(it.sku && (this.stdSku[it.sku]===undefined || this.provisional.has(it.sku))) this.aprenderTiempo(it.sku);
+    if(it.sku) this.aprenderTiempo(it.sku);
     this.autoPreparacion();
     this.render();
   },
 
+  // TIEMPO de cada núcleo, con la misma regla que Oficina (Prod.calcRefs): sus unidades de los últimos 90 días
+  // (inicio → fin sin las paradas del puesto), quitando los tiempos raros (menos de la mitad o más del doble de
+  // la mediana). Con 7 unidades normales o más se guarda la mediana; con menos, el estándar del programa.
   async aprenderTiempo(sku){
+    const ahora=Date.now(); this._aprendido=this._aprendido||{};
+    if(this._aprendido[sku] && ahora-this._aprendido[sku]<10*60000) return; // como mucho cada 10 min por núcleo
+    this._aprendido[sku]=ahora;
     try{
-      const hoy=new Date(); hoy.setHours(0,0,0,0);
-      const {data}=await sb.from('fabricacion_eventos').select('unidad_id,tipo,ts').eq('sku',sku).gte('ts',hoy.toISOString());
-      const byU={}; (data||[]).forEach(e=>{(byU[e.unidad_id]=byU[e.unidad_id]||[]).push(e);});
+      const ini=new Date(ahora-90*86400000).toISOString();
+      const evs=await selAll(()=>sb.from('fabricacion_eventos').select('unidad_id,puesto_id,tipo,ts').eq('sku',sku).gte('ts',ini),['ts','unidad_id']);
+      const pids=[...new Set(evs.map(e=>e.puesto_id).filter(x=>x!=null))];
+      const pars=pids.length?await selAll(()=>sb.from('paradas').select('puesto_id,inicio,fin').in('puesto_id',pids).gte('inicio',ini).not('fin','is',null),['inicio']):[];
+      const parP={}; pars.forEach(x=>(parP[x.puesto_id]=parP[x.puesto_id]||[]).push([new Date(x.inicio).getTime(),new Date(x.fin).getTime()]));
+      const g={}; evs.forEach(e=>{ const k=e.unidad_id+'|'+e.puesto_id; (g[k]=g[k]||[]).push(e); });
       const durs=[];
-      for(const uid in byU){
-        const a=byU[uid]; const i=a.find(x=>x.tipo==='inicio'); const f=a.find(x=>x.tipo==='fin');
-        if(i&&f){ const d=(new Date(f.ts)-new Date(i.ts))/1000; if(d>0&&d<86400) durs.push(d); }
-      }
-      const med=medianaJs(durs);
-      if(med>0){
-        const wk=isoWeekInfo(new Date());
+      Object.values(g).forEach(arr=>{ arr.sort((a,b)=>new Date(a.ts)-new Date(b.ts)); let i0=null;
+        arr.forEach(e=>{ if(e.tipo==='inicio'){ i0=e; return; } if(e.tipo!=='fin'||!i0) return;
+          const a=new Date(i0.ts).getTime(), b=new Date(e.ts).getTime(); i0=null;
+          const d=(b-a)/1000-solaparSeg(a,b,parP[e.puesto_id]||[]); if(d>0&&d<8*3600) durs.push(d); }); });
+      const base=durs.length>=3?medianaJs(durs):0;
+      const val=base?durs.filter(d=>d>=base*0.5&&d<=base*2):durs;
+      const wk=isoWeekInfo(new Date());
+      if(val.length>=7){
+        const med=Math.round(medianaJs(val));
         await sb.from('tiempos_sku').update({vigente:false}).eq('sku',sku).eq('vigente',true);
-        await sb.from('tiempos_sku').upsert(
-          {sku, semana:wk.label, ini_semana:wk.monday, mediana_seg:Math.round(med), n_unidades:durs.length, vigente:true},
-          {onConflict:'sku,semana'});
+        await sb.from('tiempos_sku').upsert({sku, semana:wk.label, ini_semana:wk.monday, mediana_seg:med, n_unidades:val.length, vigente:true},{onConflict:'sku,semana'});
         this.stdSku[sku]=med;
-        this.provisional.add(sku);
-        this.render();
+      }else if(this.stdSku[sku]!==undefined){
+        // ya no llega a 7 normales (p. ej. un tiempo de antes con 1 muestra): vuelve al estándar
+        await sb.from('tiempos_sku').update({vigente:false}).eq('sku',sku).eq('vigente',true);
+        delete this.stdSku[sku];
       }
+      this.render();
     }catch(e){}
   },
 
