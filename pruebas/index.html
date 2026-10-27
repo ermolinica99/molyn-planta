@@ -1016,7 +1016,7 @@ const Op = {
     const ts=await readCached('tiempos_vig2', async()=>{
       const {data}=await sb.from('tiempos_sku').select('sku,mediana_seg,n_unidades').eq('vigente',true); return data;
     });
-    // solo los tiempos con 7 unidades normales o más; el resto usa el estándar del programa
+    // solo los tiempos con 7 tiradas o más; el resto usa el estándar del programa
     (ts||[]).forEach(t=>{ if(Number(t.n_unidades)>=7 && Number(t.mediana_seg)>0) this.stdSku[t.sku]=Number(t.mediana_seg); });
     this.tiempoTeoricoPrograma={};
     try{
@@ -1341,33 +1341,41 @@ const Op = {
 
   // TIEMPO de cada núcleo, con la misma regla que Oficina (Prod.calcRefs): sus unidades de los últimos 90 días
   // (inicio → fin sin las paradas del puesto), quitando los tiempos raros (menos de la mitad o más del doble de
-  // la mediana). Con 7 unidades normales o más se guarda la mediana; con menos, el estándar del programa.
+  // la mediana) y agrupadas por TIRADA: cada lote cerrado (sus unidades van encadenadas, el fin de una es el
+  // inicio de la siguiente, misma OT y puesto); una unidad suelta es su propia tirada. Cada tirada es una
+  // muestra (su tiempo medio por unidad). Con 7 tiradas o más se guarda la mediana de las tiradas (n_unidades =
+  // nº de tiradas); con menos, el estándar del programa.
   async aprenderTiempo(sku){
     const ahora=Date.now(); this._aprendido=this._aprendido||{};
     if(this._aprendido[sku] && ahora-this._aprendido[sku]<10*60000) return; // como mucho cada 10 min por núcleo
     this._aprendido[sku]=ahora;
     try{
       const ini=new Date(ahora-90*86400000).toISOString();
-      const evs=await selAll(()=>sb.from('fabricacion_eventos').select('unidad_id,puesto_id,tipo,ts').eq('sku',sku).gte('ts',ini),['ts','unidad_id']);
+      const evs=await selAll(()=>sb.from('fabricacion_eventos').select('unidad_id,ot,puesto_id,tipo,ts').eq('sku',sku).gte('ts',ini),['ts','unidad_id']);
       const pids=[...new Set(evs.map(e=>e.puesto_id).filter(x=>x!=null))];
       const pars=pids.length?await selAll(()=>sb.from('paradas').select('puesto_id,inicio,fin').in('puesto_id',pids).gte('inicio',ini).not('fin','is',null),['inicio']):[];
       const parP={}; pars.forEach(x=>(parP[x.puesto_id]=parP[x.puesto_id]||[]).push([new Date(x.inicio).getTime(),new Date(x.fin).getTime()]));
       const g={}; evs.forEach(e=>{ const k=e.unidad_id+'|'+e.puesto_id; (g[k]=g[k]||[]).push(e); });
-      const durs=[];
+      const us=[];
       Object.values(g).forEach(arr=>{ arr.sort((a,b)=>new Date(a.ts)-new Date(b.ts)); let i0=null;
         arr.forEach(e=>{ if(e.tipo==='inicio'){ i0=e; return; } if(e.tipo!=='fin'||!i0) return;
-          const a=new Date(i0.ts).getTime(), b=new Date(e.ts).getTime(); i0=null;
-          const d=(b-a)/1000-solaparSeg(a,b,parP[e.puesto_id]||[]); if(d>0&&d<8*3600) durs.push(d); }); });
-      const base=durs.length>=3?medianaJs(durs):0;
-      const val=base?durs.filter(d=>d>=base*0.5&&d<=base*2):durs;
+          const a=new Date(i0.ts).getTime(), b=new Date(e.ts).getTime(), ot=e.ot||i0.ot||null; i0=null;
+          const d=(b-a)/1000-solaparSeg(a,b,parP[e.puesto_id]||[]); if(d>0&&d<8*3600) us.push({seg:d,ot,puesto_id:e.puesto_id,ini:a,fin:b}); }); });
+      const base=us.length>=3?medianaJs(us.map(x=>x.seg)):0;
+      const okU=new Set(base?us.filter(x=>x.seg>=base*0.5&&x.seg<=base*2):us);
+      // tiradas: misma OT y puesto, encadenadas (inicio = fin de la anterior, ±1 s)
+      const gt={}; us.forEach(x=>{ const k=(x.ot||'')+'|'+x.puesto_id; (gt[k]=gt[k]||[]).push(x); });
+      const mues=[]; Object.values(gt).forEach(arr=>{ arr.sort((a,b)=>a.ini-b.ini); let cur=null, finAnt=null; const tir=[];
+        arr.forEach(x=>{ if(!cur||!x.ot||finAnt==null||Math.abs(x.ini-finAnt)>1000){ cur=[]; tir.push(cur); } cur.push(x); finAnt=x.fin; });
+        tir.forEach(t=>{ const v=t.filter(x=>okU.has(x)); if(v.length) mues.push(v.reduce((a,x)=>a+x.seg,0)/v.length); }); });
       const wk=isoWeekInfo(new Date());
-      if(val.length>=7){
-        const med=Math.round(medianaJs(val));
+      if(mues.length>=7){
+        const med=Math.round(medianaJs(mues));
         await sb.from('tiempos_sku').update({vigente:false}).eq('sku',sku).eq('vigente',true);
-        await sb.from('tiempos_sku').upsert({sku, semana:wk.label, ini_semana:wk.monday, mediana_seg:med, n_unidades:val.length, vigente:true},{onConflict:'sku,semana'});
+        await sb.from('tiempos_sku').upsert({sku, semana:wk.label, ini_semana:wk.monday, mediana_seg:med, n_unidades:mues.length, vigente:true},{onConflict:'sku,semana'});
         this.stdSku[sku]=med;
       }else if(this.stdSku[sku]!==undefined){
-        // ya no llega a 7 normales (p. ej. un tiempo de antes con 1 muestra): vuelve al estándar
+        // ya no llega a 7 tiradas (p. ej. un tiempo de antes con 1 muestra): vuelve al estándar
         await sb.from('tiempos_sku').update({vigente:false}).eq('sku',sku).eq('vigente',true);
         delete this.stdSku[sku];
       }
