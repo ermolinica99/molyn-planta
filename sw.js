@@ -7,7 +7,7 @@
 // ven al momento, igual que sin service worker.
 // Las llamadas a la base de datos (supabase.co) NO pasan por aquí: van directas a la red.
 
-const CACHE = 'molyn-planta-v4';
+const CACHE = 'molyn-planta-v5';
 const CORE = [
   './',
   './index.html',
@@ -35,7 +35,7 @@ self.addEventListener('install', e => {
 self.addEventListener('activate', e => {
   e.waitUntil(
     caches.keys()
-      .then(ks => Promise.all(ks.filter(k => k !== CACHE).map(k => caches.delete(k))))
+      .then(ks => Promise.all(ks.filter(k => k !== CACHE && !k.startsWith('molyn-planta-pruebas')).map(k => caches.delete(k))))
       .then(() => self.clients.claim())
   );
 });
