@@ -801,7 +801,7 @@ const Est={
     const e=ESTANDARES[i]; if(!e) return;
     $('#estTit').textContent=e.titulo;
     $('#estLista').classList.add('hidden'); $('#estVolver').classList.remove('hidden');
-    const f=$('#estFrame'); f.src=e.archivo; f.classList.remove('hidden');
+    const f=$('#estFrame'); f.src=e.archivo+'?v='+Date.now(); /* ?v=: siempre la última versión; sin red, el service worker da la guardada */ f.classList.remove('hidden');
   }
 };
 

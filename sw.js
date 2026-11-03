@@ -7,7 +7,7 @@
 // ven al momento, igual que sin service worker.
 // Las llamadas a la base de datos (supabase.co) NO pasan por aquí: van directas a la red.
 
-const CACHE = 'molyn-planta-v5';
+const CACHE = 'molyn-planta-v6';
 const CORE = [
   './',
   './index.html',
@@ -55,9 +55,11 @@ self.addEventListener('fetch', e => {
   if (!guardable(req)) return;
   e.respondWith((async () => {
     const cache = await caches.open(CACHE);
-    const guardada = await cache.match(req, { ignoreSearch: req.mode === 'navigate' });
+    // páginas (también los estándares, que se abren con ?v=...): se guardan sin la parte ?..., una copia por página
+    const nav = req.mode === 'navigate', clave = nav ? req.url.split('?')[0] : req;
+    const guardada = await cache.match(clave, { ignoreSearch: nav });
     const red = fetch(req).then(res => {
-      if (res && (res.ok || res.type === 'opaque')) cache.put(req, res.clone()).catch(() => {});
+      if (res && (res.ok || res.type === 'opaque')) cache.put(clave, res.clone()).catch(() => {});
       return res;
     });
     if (!guardada) return red;
