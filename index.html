@@ -724,12 +724,67 @@ const Q = {
       for(const k in op.match){ const v=op.match[k]; if(v===null) q=q.is(k,null); else q=q.eq(k,v); }
       const {error}=await q; if(error) throw error;
     }
-    else if(op.t==='consumir_reserva'){
-      const {data}=await sb.from('reservas').select('id,cantidad').eq('sku',op.sku).eq('estado','pendiente').order('created_at').order('id').limit(1);
-      const r=data&&data[0]; if(!r) return;
-      if(r.cantidad>1){ const {error}=await sb.from('reservas').update({cantidad:r.cantidad-1}).eq('id',r.id); if(error) throw error; }
-      else { const {error}=await sb.from('reservas').update({estado:'consumida'}).eq('id',r.id); if(error) throw error; }
+    else if(op.t==='consumir'){
+      // consumo de una unidad + su reserva. La reserva solo se descuenta si la unidad se ha consumido
+      // de verdad con ESTA operación (antes se descontaba aunque otra tablet ya la hubiera consumido).
+      if(!op._hecho){
+        const {data,error}=await sb.from('unidades').update({estado:'consumida',consumida_at:op.ts}).eq('id',op.id).eq('estado','stock').select('id,sku');
+        if(error) throw error;
+        let sku=(data&&data[0])?data[0].sku:null;
+        if(!data||!data.length){
+          // no ha cambiado nada: o ya no estaba en stock, o este mismo envío llegó antes y se perdió la respuesta
+          const r=await sb.from('unidades').select('sku,estado,consumida_at').eq('id',op.id).limit(1);
+          if(r.error) throw r.error;
+          const u=r.data&&r.data[0];
+          if(u && u.estado==='consumida' && u.consumida_at && new Date(u.consumida_at).getTime()===new Date(op.ts).getTime()) sku=u.sku;
+        }
+        op._hecho=true; op._sku=sku||''; this.save();
+      }
+      if(op._sku) await this.descontarReserva(op._sku);
     }
+    else if(op.t==='consumir_reserva'){ await this.descontarReserva(op.sku); } // operaciones antiguas que quedaran en cola
+  },
+  async descontarReserva(sku){
+    // supabase-js no lanza excepción si falla la red: devuelve {error}. Sin comprobarlo, un corte de red
+    // daba la reserva por descontada y se perdía.
+    const {data,error}=await sb.from('reservas').select('id,cantidad').eq('sku',sku).eq('estado','pendiente').order('created_at').order('id').limit(1);
+    if(error) throw error;
+    const r=data&&data[0]; if(!r) return;
+    if(r.cantidad>1){ const {error}=await sb.from('reservas').update({cantidad:r.cantidad-1}).eq('id',r.id); if(error) throw error; }
+    else { const {error}=await sb.from('reservas').update({estado:'consumida'}).eq('id',r.id); if(error) throw error; }
+  },
+  // ---- operaciones que no se pudieron guardar: verlas, reintentarlas o quitar el aviso ----
+  descOp(op){
+    const p=op.payload||{}, m=op.match||{};
+    const que={fabricacion_eventos:(p.tipo==='fin'?'Fin':'Inicio')+' de fabricación',unidades:'Unidad',turnos:'Turno',paradas:'Parada'}[op.table]
+      || (op.t==='consumir'?'Consumo':op.t==='consumir_reserva'?'Reserva':(op.table||op.t));
+    const id=p.unidad_id||m.unidad_id||m.id||op.id||op.sku||p.motivo||'';
+    return que+(id?' · '+id:'');
+  },
+  verFallos(){
+    let el=$('#fallosModal');
+    if(!el){ el=document.createElement('div'); el.id='fallosModal'; el.className='modal'; document.body.appendChild(el); }
+    if(!this.failed.length){ el.remove(); return; }
+    el.innerHTML=`<div class="modal-box" style="max-height:85vh;overflow:auto">
+      <h3>No se pudo guardar (${this.failed.length})</h3>
+      <div style="font-size:15px;color:var(--muted);margin-bottom:10px">La base de datos rechazó estas operaciones. Avisa a oficina; cuando esté resuelto, pulsa «Reintentar».</div>
+      ${this.failed.map(op=>`<div class="urow"><div style="min-width:0"><div class="uid" style="font-size:16px">${esc(this.descOp(op))}</div>
+        <div class="usub">${esc(op._failedAt?new Date(op._failedAt).toLocaleString('es-ES',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}):'')} · ${esc(op._error||'')}</div></div></div>`).join('')}
+      <button class="btn-ink full" style="margin-top:14px" onclick="Q.reintentarFallos()">Reintentar</button>
+      <button class="btn-ghost full" style="margin-top:8px" onclick="Q.descartarFallos()">Quitar el aviso (oficina ya lo sabe)</button>
+      <button class="btn-ghost full" style="margin-top:8px" onclick="Q.cerrarFallos()">Cerrar</button></div>`;
+  },
+  cerrarFallos(){ const el=$('#fallosModal'); if(el) el.remove(); },
+  reintentarFallos(){
+    // vuelven a la cola, delante y en su orden, con los intentos a cero
+    const ops=this.failed.map(op=>{ const o=Object.assign({},op); delete o._error; delete o._failedAt; o._attempts=0; return o; });
+    this.items=ops.concat(this.items); this.failed=[]; this.save(); this.saveFailed(); this.cerrarFallos();
+    if(!navigator.onLine){ toast('Sin conexión: se reintentará al volver la red','err'); return; }
+    this.flush(true);
+  },
+  descartarFallos(){
+    if(!confirm('Estas operaciones NO se han guardado. ¿Quitar el aviso de todos modos?')) return;
+    this.failed=[]; this.saveFailed(); this.cerrarFallos();
   },
   dropInsert(table, matchFn){ this.items=this.items.filter(op=>!(op.t==='insert'&&op.table===table&&matchFn(op.payload))); this.save(); },
   async flush(manual){
@@ -767,7 +822,8 @@ const Q = {
   badge(){
     const n=this.items.length, nf=this.failed.length, bar=$('#syncBar'), txt=$('#syncTxt'), btn=$('#syncBtn');
     if(!bar) return;
-    if(nf){ bar.className='syncbar err'; txt.textContent=nf+' error'+(nf>1?'es':'')+' sin guardar — avisa a oficina'+(n?' · '+n+' pendientes':''); btn.classList.toggle('hidden', n===0); return; }
+    btn.textContent=nf?'Ver errores':'Sincronizar ahora'; btn.onclick=nf?()=>this.verFallos():()=>this.flush(true);
+    if(nf){ bar.className='syncbar err'; txt.textContent=nf+' error'+(nf>1?'es':'')+' sin guardar — avisa a oficina'+(n?' · '+n+' pendientes':''); btn.classList.remove('hidden'); return; }
     if(!navigator.onLine){ bar.className='syncbar off'; txt.textContent='Sin conexión'+(n?' · '+n+' sin enviar':''); btn.classList.toggle('hidden', n===0); }
     else if(n){ bar.className='syncbar pend'; txt.textContent=n+' sin enviar'; btn.classList.remove('hidden'); }
     else { bar.className='syncbar ok'; txt.textContent='Conectado'; btn.classList.add('hidden'); }
@@ -808,7 +864,7 @@ const Est={
 function qInsert(table,payload){ Q.enqueue({t:'insert',table,payload}); }
 function qUpdate(table,match,payload){ Q.enqueue({t:'update',table,match,payload}); }
 function qDelete(table,match){ Q.enqueue({t:'delete',table,match}); }
-function qConsumirReserva(sku){ if(sku) Q.enqueue({t:'consumir_reserva',sku}); }
+function qConsumir(id,ts){ Q.enqueue({t:'consumir',id,ts}); }
 
 const Cache={
   set(k,v){ try{ localStorage.setItem('molyn_c_'+k, JSON.stringify(v)); }catch(e){} },
@@ -1239,8 +1295,9 @@ const Op = {
   async iniciar(code){
     let u=null, notFound=false;
     try{
-      const {data}=await sb.from('unidades').select('id,ot,sku,estado').eq('id',code).limit(1);
-      if(data && data.length) u=data[0]; else notFound=true;
+      // supabase-js no lanza excepción sin red: devuelve {error}. Con error se sigue en local (u=null)
+      const {data,error}=await sb.from('unidades').select('id,ot,sku,estado').eq('id',code).limit(1);
+      if(error) u=null; else if(data && data.length) u=data[0]; else notFound=true;
     }catch(e){ u=null; }
     if(notFound){ toast('Código no reconocido: '+code,'err'); beep(false); return; }
     if(u){
@@ -1793,7 +1850,7 @@ const Enc = {
     code=String(code).trim().toUpperCase();
     if(this.cart.has(code)){ toast('Ya está en la lista','err'); return; }
     let u=null, notFound=false;
-    try{ const {data}=await sb.from('unidades').select('id,ot,sku,estado,fabricada_at').eq('id',code).limit(1); if(data&&data.length) u=data[0]; else notFound=true; }
+    try{ const {data,error}=await sb.from('unidades').select('id,ot,sku,estado,fabricada_at').eq('id',code).limit(1); if(error) u=null; else if(data&&data.length) u=data[0]; else notFound=true; }
     catch(e){ u=null; }
     if(notFound){ toast('Código no reconocido: '+code,'err'); beep(false); return; }
     if(u){
@@ -1828,13 +1885,11 @@ const Enc = {
     if(!confirm(`¿Consumir ${arr.length} núcleos?`)) return;
     const now=new Date().toISOString();
     for(const it of arr){
-      qUpdate('unidades',{id:it.unidad_id,estado:'stock'},{estado:'consumida',consumida_at:now});
-      this.consumirReserva(it.sku);
+      qConsumir(it.unidad_id,now); // consume la unidad y, solo si se consumió, descuenta su reserva
     }
     toast(arr.length+' en cola de consumo','ok'); beep(true,true);
     this.cart.clear(); this.renderCart();
   },
-  consumirReserva(sku){ qConsumirReserva(sku); },
 
   // ---------- STOCK ----------
   async loadStock(silent){
