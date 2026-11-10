@@ -706,8 +706,10 @@ function solaparSeg(iniMs,finMs,intervalos){
 //  TABLET AUTORIZADA
 // ============================================================
 // La base de datos ya no deja leer ni guardar nada con la clave pública sola. Cada tablet tiene su
-// propia sesión (anónima, guardada en la tablet) y un administrador la autoriza una vez en Oficina
-// (Configuración → Usuarios y costes → Tablets de planta). Ver pruebas/sql/03_seguridad.sql en Oficina.
+// propia sesión (anónima, guardada en la tablet) y, la primera vez, hay que escribir en ella la
+// CONTRASEÑA DE PLANTA (la ve cualquier usuario de Oficina arriba, en «Clave de planta»; la cambia un
+// administrador). Una vez por dispositivo: si se cambia de tablet o de navegador, se vuelve a poner.
+// Ver pruebas/sql/03_seguridad.sql en Oficina.
 function esRed(e){ return /Failed to fetch|NetworkError|network|fetch|timeout|Load failed/i.test((e&&e.message)||String(e||'')); }
 function esSesion(e){ return !!e && (e.code==='PGRST301' || e.code==='PGRST303' || e.status===401 || /JWT|token is expired/i.test(e.message||'')); }
 const Disp={
@@ -767,26 +769,31 @@ const Disp={
       return;
     }
     const reintentar='<button class="btn-ghost full" style="margin-top:12px" onclick="Disp.paso()">Volver a comprobar</button>';
-    if(e==='sinred') this.pintar('<h2 style="margin:0 0 10px">Sin conexión</h2><p style="font-size:17px;color:var(--muted);line-height:1.45">Esta tablet todavía no está autorizada y hace falta conexión para pedir el acceso.</p>'+reintentar);
+    if(e==='sinred') this.pintar('<h2 style="margin:0 0 10px">Sin conexión</h2><p style="font-size:17px;color:var(--muted);line-height:1.45">Esta tablet todavía no tiene acceso y hace falta conexión para poner la contraseña de planta.</p>'+reintentar);
     else if(e==='error') this.pintar('<h2 style="margin:0 0 10px">No se puede comprobar la tablet</h2><p style="font-size:17px;color:var(--muted);line-height:1.45">'+esc(this.error)+'</p>'+reintentar);
-    else if(e==='nueva' || e==='rechazado') this.pintar(`<h2 style="margin:0 0 10px">${e==='nueva'?'Tablet nueva':'Esta tablet no tiene acceso'}</h2>
-      <p style="font-size:17px;color:var(--muted);line-height:1.45;margin:0 0 14px">${e==='nueva'?'Antes de usarla, oficina tiene que autorizarla.':'Oficina le ha retirado el acceso. Puedes volver a pedirlo.'} Ponle un nombre que se reconozca (por ejemplo, el puesto donde está).</p>
-      <input id="dispNombre" class="buscar" maxlength="60" placeholder="Nombre de la tablet" value="${esc(this.nombre||'')}" style="text-align:center">
-      <button class="btn-ink full" onclick="Disp.pedir(this)">Pedir acceso a oficina</button>`);
-    else{
-      this.pintar(`<h2 style="margin:0 0 10px">Esperando a oficina</h2>
-        <p style="font-size:17px;color:var(--muted);line-height:1.45">La tablet <b>${esc(this.nombre)}</b> ha pedido acceso. Un administrador tiene que autorizarla en Oficina → Configuración → Usuarios y costes → Tablets de planta.</p>
-        <p style="font-size:15px;color:var(--muted)">Se comprueba sola cada pocos segundos.</p>`+reintentar);
-      this.timer=setTimeout(()=>this.paso(),8000);
-    }
+    else this.pintar(`<h2 style="margin:0 0 10px">Contraseña de planta</h2>
+      <p style="font-size:17px;color:var(--muted);line-height:1.45;margin:0 0 14px">Solo se pide una vez en cada tablet. Si no la sabes, pídela en oficina (la ven arriba, en «Clave de planta»).</p>
+      <input id="dispNombre" class="buscar" maxlength="60" placeholder="Nombre de esta tablet (p. ej. el puesto)" value="${esc(this.nombre||'')}" style="text-align:center">
+      <input id="dispClave" class="buscar" type="password" autocomplete="off" placeholder="Contraseña de planta" style="text-align:center" onkeydown="if(event.key==='Enter')Disp.activar(document.getElementById('dispBtn'))">
+      <div id="dispErr" class="pin-err" style="margin-bottom:8px"></div>
+      <button id="dispBtn" class="btn-ink full" onclick="Disp.activar(this)">Entrar</button>`);
   },
-  async pedir(btn){
-    const nombre=$('#dispNombre').value.trim();
-    if(!nombre){ toast('Ponle un nombre a la tablet','err'); return; }
-    btn.disabled=true;
-    const {error}=await sb.rpc('dispositivo_solicitar',{p_nombre:nombre});
-    if(error){ toast(esRed(error)?'Sin conexión':'Error: '+error.message,'err'); btn.disabled=false; return; }
-    this.paso();
+  async activar(btn){
+    const nombre=$('#dispNombre').value.trim(), clave=$('#dispClave').value;
+    const err=m=>{ $('#dispErr').textContent=m; };
+    if(!nombre) return err('Ponle un nombre a la tablet');
+    if(!clave) return err('Escribe la contraseña de planta');
+    btn.disabled=true; err('');
+    try{
+      const {data,error}=await sb.rpc('dispositivo_activar',{p_nombre:nombre,p_clave:clave});
+      if(error) return err(esRed(error)?'Sin conexión':'Error: '+error.message);
+      if(data && data.ok){ this.nombre=nombre; this.t=0; return this.paso(); }
+      const m=data&&data.motivo;
+      err(m==='sin_clave'?'Oficina todavía no ha puesto la contraseña de planta'
+        :m==='espera'?'Demasiados intentos fallidos. Espera 15 minutos y vuelve a probar'
+        :'Contraseña incorrecta');
+      $('#dispClave').value='';
+    }finally{ btn.disabled=false; }
   }
 };
 
@@ -883,8 +890,8 @@ const Q = {
     if(!navigator.onLine){ this.badge(); if(manual) toast('Sin conexión','err'); return; }
     if(!this.items.length){ this.badge(); return; }
     this.flushing=true; this.badge();
-    // sin autorización no se envía nada (se queda en cola hasta que oficina autorice la tablet)
-    if(!(await Disp.autorizado())){ this.flushing=false; this.badge(); if(manual) toast(Disp.t&&!Disp.ok?'Tablet sin autorizar: avisa a oficina':'Sin conexión','err'); return; }
+    // sin acceso no se envía nada (se queda en cola hasta que se ponga la contraseña de planta en la tablet)
+    if(!(await Disp.autorizado())){ this.flushing=false; this.badge(); if(manual) toast(Disp.t&&!Disp.ok?'Esta tablet no tiene acceso: vuelve a poner la contraseña de planta':'Sin conexión','err'); return; }
     let ok=0, fail=0;
     while(this.items.length){
       const op=this.items[0];
@@ -920,7 +927,7 @@ const Q = {
   badge(){
     const n=this.items.length, nf=this.failed.length, bar=$('#syncBar'), txt=$('#syncTxt'), btn=$('#syncBtn');
     if(!bar) return;
-    if(Disp.t && !Disp.ok){ bar.className='syncbar err'; txt.textContent='Tablet sin autorizar — avisa a oficina'+(n?' · '+n+' sin enviar':''); btn.textContent='Comprobar'; btn.onclick=()=>{ Disp.t=0; this.flush(true); if(!this.items.length) Disp.autorizado().then(()=>this.badge()); }; btn.classList.remove('hidden'); return; }
+    if(Disp.t && !Disp.ok){ bar.className='syncbar err'; txt.textContent='Tablet sin acceso'+(n?' · '+n+' sin enviar (no se pierden)':''); btn.textContent='Poner contraseña'; btn.onclick=()=>location.reload(); btn.classList.remove('hidden'); return; }
     btn.textContent=nf?'Ver errores':'Sincronizar ahora'; btn.onclick=nf?()=>this.verFallos():()=>this.flush(true);
     if(nf){ bar.className='syncbar err'; txt.textContent=nf+' error'+(nf>1?'es':'')+' sin guardar — avisa a oficina'+(n?' · '+n+' pendientes':''); btn.classList.remove('hidden'); return; }
     if(!navigator.onLine){ bar.className='syncbar off'; txt.textContent='Sin conexión'+(n?' · '+n+' sin enviar':''); btn.classList.toggle('hidden', n===0); }
