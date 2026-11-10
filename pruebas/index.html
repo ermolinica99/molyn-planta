@@ -419,6 +419,8 @@ input,.uid,.det-row .v{-webkit-user-select:text;user-select:text}
       <button class="back" onclick="Login.back()">← Cambiar usuario</button>
     </div>
   </div>
+
+  <div id="dispStep" class="hidden" style="width:100%;max-width:520px;text-align:center"></div>
 </section>
 
 <!-- ================= APP (tras login) ================= -->
@@ -701,6 +703,94 @@ function solaparSeg(iniMs,finMs,intervalos){
 }
 
 // ============================================================
+//  TABLET AUTORIZADA
+// ============================================================
+// La base de datos ya no deja leer ni guardar nada con la clave pública sola. Cada tablet tiene su
+// propia sesión (anónima, guardada en la tablet) y un administrador la autoriza una vez en Oficina
+// (Configuración → Usuarios y costes → Tablets de planta). Ver pruebas/sql/03_seguridad.sql en Oficina.
+function esRed(e){ return /Failed to fetch|NetworkError|network|fetch|timeout|Load failed/i.test((e&&e.message)||String(e||'')); }
+function esSesion(e){ return !!e && (e.code==='PGRST301' || e.code==='PGRST303' || e.status===401 || /JWT|token is expired/i.test(e.message||'')); }
+const Disp={
+  ok:false, t:0, nombre:'', timer:null,
+  cache(){ try{ return localStorage.getItem('molyn_disp_ok')==='1'; }catch(e){ return false; } },
+  setCache(v){ try{ localStorage.setItem('molyn_disp_ok',v?'1':'0'); }catch(e){} },
+  // una sola a la vez: dos altas anónimas simultáneas crearían dos identidades distintas para la misma tablet
+  sesion(){
+    if(!this._ses) this._ses=(async()=>{
+      const {data}=await sb.auth.getSession();
+      if(data && data.session) return;
+      const r=await sb.auth.signInAnonymously();
+      if(r.error) throw r.error;
+    })().finally(()=>{ this._ses=null; });
+    return this._ses;
+  },
+  // estado de esta tablet: 'aprobado' | 'pendiente' | 'rechazado' | 'nueva' | 'sinred' | 'error'
+  async estado(){
+    try{
+      await this.sesion();
+      let r=await sb.rpc('mi_dispositivo');
+      if(r.error && esSesion(r.error)){ await sb.auth.refreshSession(); r=await sb.rpc('mi_dispositivo'); }
+      if(r.error) throw r.error;
+      if(!r.data) return 'nueva';
+      this.nombre=r.data.nombre||'';
+      return r.data.estado==='aprobado'?'aprobado':r.data.estado==='rechazado'?'rechazado':'pendiente';
+    }catch(e){
+      if(esRed(e)) return 'sinred';
+      this.error=/anonymous/i.test(e.message||'')?'Falta activar "Allow anonymous sign-ins" en Supabase (Authentication → Sign In / Providers).'
+        :/mi_dispositivo|schema cache|function/i.test(e.message||'')?'Falta aplicar 03_seguridad.sql en la base de datos.':(e.message||String(e));
+      return 'error';
+    }
+  },
+  // ¿puede esta tablet guardar ahora? Se pregunta antes de enviar la cola: una tablet sin autorizar no
+  // recibe error al modificar, simplemente no cambia nada, y la cola lo daría por enviado.
+  async autorizado(){
+    if(Date.now()-this.t<20000) return this.ok;
+    const e=await this.estado();
+    if(e==='sinred' || e==='error') return false; // no se sabe: no se envía nada todavía
+    this.t=Date.now(); this.ok=(e==='aprobado'); this.setCache(this.ok);
+    return this.ok;
+  },
+  pintar(html){
+    $('#login').classList.remove('hidden'); $('#app').classList.add('hidden');
+    $('#userStep').classList.add('hidden'); $('#pinStep').classList.add('hidden');
+    const el=$('#dispStep'); el.classList.remove('hidden'); el.innerHTML=html;
+  },
+  // arranque: resuelve cuando la tablet puede usarse (autorizada, o sin red pero autorizada antes)
+  init(){ return new Promise(res=>{ this._listo=res; this.paso(); }); },
+  async paso(){
+    clearTimeout(this.timer);
+    const e=await this.estado();
+    if(e==='aprobado' || (e==='sinred' && this.cache())){
+      if(e==='aprobado'){ this.ok=true; this.t=Date.now(); this.setCache(true); }
+      $('#dispStep').classList.add('hidden'); $('#userStep').classList.remove('hidden');
+      const f=this._listo; this._listo=null; if(f) f();
+      return;
+    }
+    const reintentar='<button class="btn-ghost full" style="margin-top:12px" onclick="Disp.paso()">Volver a comprobar</button>';
+    if(e==='sinred') this.pintar('<h2 style="margin:0 0 10px">Sin conexión</h2><p style="font-size:17px;color:var(--muted);line-height:1.45">Esta tablet todavía no está autorizada y hace falta conexión para pedir el acceso.</p>'+reintentar);
+    else if(e==='error') this.pintar('<h2 style="margin:0 0 10px">No se puede comprobar la tablet</h2><p style="font-size:17px;color:var(--muted);line-height:1.45">'+esc(this.error)+'</p>'+reintentar);
+    else if(e==='nueva' || e==='rechazado') this.pintar(`<h2 style="margin:0 0 10px">${e==='nueva'?'Tablet nueva':'Esta tablet no tiene acceso'}</h2>
+      <p style="font-size:17px;color:var(--muted);line-height:1.45;margin:0 0 14px">${e==='nueva'?'Antes de usarla, oficina tiene que autorizarla.':'Oficina le ha retirado el acceso. Puedes volver a pedirlo.'} Ponle un nombre que se reconozca (por ejemplo, el puesto donde está).</p>
+      <input id="dispNombre" class="buscar" maxlength="60" placeholder="Nombre de la tablet" value="${esc(this.nombre||'')}" style="text-align:center">
+      <button class="btn-ink full" onclick="Disp.pedir(this)">Pedir acceso a oficina</button>`);
+    else{
+      this.pintar(`<h2 style="margin:0 0 10px">Esperando a oficina</h2>
+        <p style="font-size:17px;color:var(--muted);line-height:1.45">La tablet <b>${esc(this.nombre)}</b> ha pedido acceso. Un administrador tiene que autorizarla en Oficina → Configuración → Usuarios y costes → Tablets de planta.</p>
+        <p style="font-size:15px;color:var(--muted)">Se comprueba sola cada pocos segundos.</p>`+reintentar);
+      this.timer=setTimeout(()=>this.paso(),8000);
+    }
+  },
+  async pedir(btn){
+    const nombre=$('#dispNombre').value.trim();
+    if(!nombre){ toast('Ponle un nombre a la tablet','err'); return; }
+    btn.disabled=true;
+    const {error}=await sb.rpc('dispositivo_solicitar',{p_nombre:nombre});
+    if(error){ toast(esRed(error)?'Sin conexión':'Error: '+error.message,'err'); btn.disabled=false; return; }
+    this.paso();
+  }
+};
+
+// ============================================================
 //  OFFLINE-FIRST: cola local + caché + estado de red
 // ============================================================
 const Q = {
@@ -791,7 +881,10 @@ const Q = {
   async flush(manual){
     if(this.flushing) return;
     if(!navigator.onLine){ this.badge(); if(manual) toast('Sin conexión','err'); return; }
+    if(!this.items.length){ this.badge(); return; }
     this.flushing=true; this.badge();
+    // sin autorización no se envía nada (se queda en cola hasta que oficina autorice la tablet)
+    if(!(await Disp.autorizado())){ this.flushing=false; this.badge(); if(manual) toast(Disp.t&&!Disp.ok?'Tablet sin autorizar: avisa a oficina':'Sin conexión','err'); return; }
     let ok=0, fail=0;
     while(this.items.length){
       const op=this.items[0];
@@ -802,6 +895,10 @@ const Q = {
         // perdiera la respuesta (corte de red). Ya está guardado, así que se da por enviado.
         if(op.t==='insert' && e && e.code==='23505'){ this.items.shift(); this.save(); ok++; continue; }
         if(/Failed to fetch|NetworkError|network|fetch|timeout|Load failed/i.test(msg)){ break; }
+        // sesión caducada (tablet muchas horas sin red): se renueva y se reintenta en el siguiente ciclo
+        if(esSesion(e)){ try{ await sb.auth.refreshSession(); }catch(e2){} break; }
+        // "sin permiso": si es porque han retirado el acceso a la tablet, no es un fallo de la operación
+        if(e && e.code==='42501'){ Disp.t=0; if(!(await Disp.autorizado())) break; }
         op._attempts=(op._attempts||0)+1;
         if(op._attempts>=5){
           this.items.shift();
@@ -823,6 +920,7 @@ const Q = {
   badge(){
     const n=this.items.length, nf=this.failed.length, bar=$('#syncBar'), txt=$('#syncTxt'), btn=$('#syncBtn');
     if(!bar) return;
+    if(Disp.t && !Disp.ok){ bar.className='syncbar err'; txt.textContent='Tablet sin autorizar — avisa a oficina'+(n?' · '+n+' sin enviar':''); btn.textContent='Comprobar'; btn.onclick=()=>{ Disp.t=0; this.flush(true); if(!this.items.length) Disp.autorizado().then(()=>this.badge()); }; btn.classList.remove('hidden'); return; }
     btn.textContent=nf?'Ver errores':'Sincronizar ahora'; btn.onclick=nf?()=>this.verFallos():()=>this.flush(true);
     if(nf){ bar.className='syncbar err'; txt.textContent=nf+' error'+(nf>1?'es':'')+' sin guardar — avisa a oficina'+(n?' · '+n+' pendientes':''); btn.classList.remove('hidden'); return; }
     if(!navigator.onLine){ bar.className='syncbar off'; txt.textContent='Sin conexión'+(n?' · '+n+' sin enviar':''); btn.classList.toggle('hidden', n===0); }
@@ -931,32 +1029,30 @@ const Login = {
   savedUser(){
     try{ const s=sessionStorage.getItem('molyn_user')||localStorage.getItem('molyn_puesto_user'); return s?JSON.parse(s):null; }catch(e){ return null; }
   },
+  // puestos y encargados (sin el PIN: solo cuántas cifras tiene). Los devuelve el servidor solo a tablets autorizadas.
+  async lista(){
+    const {data,error}=await sb.rpc('planta_usuarios');
+    if(error) throw error;
+    return (data||[]).map(u=>({id:/^\d+$/.test(String(u.id))?Number(u.id):u.id, nombre:u.nombre, tipo:u.tipo, activo:u.activo!==false, pin_len:Number(u.pin_len)||0}))
+      .sort((x,y)=>(x.tipo===y.tipo?0:x.tipo==='puesto'?-1:1)||String(x.nombre||'').localeCompare(String(y.nombre||'')));
+  },
   async init(){
+    try{ localStorage.removeItem('molyn_c_login_users'); }catch(e){} // la caché antigua guardaba los PIN
     const saved = this.savedUser();
     if(saved){
       this.enter(saved);
       // si en Oficina han desactivado o borrado este puesto/encargado, se cierra la sesión guardada
-      const tabla = saved.tipo==='puesto' ? 'puestos_trabajo' : 'usuarios';
-      sb.from(tabla).select('id,activo').eq('id',saved.id).then(({data,error})=>{
-        if(!error && data && (!data.length || data[0].activo===false)){
+      this.lista().then(us=>{
+        const u=us.find(x=>x.tipo===saved.tipo && String(x.id)===String(saved.id));
+        if(!u || !u.activo){
           try{ sessionStorage.removeItem('molyn_user'); localStorage.removeItem('molyn_puesto_user'); }catch(e){}
           alert('Este usuario ya no está activo. Vuelve a elegir usuario.'); location.reload();
         }
-      });
+      }).catch(()=>{});
       return;
     }
-    // si no hay red al abrir la app, se usa la última lista de usuarios conocida
-    const users = await readCached('login_users', async()=>{
-      const [{data:puestos,error:e1},{data:encs,error:e2}] = await Promise.all([
-        sb.from('puestos_trabajo').select('id,nombre,pin').eq('activo',true).order('nombre'),
-        sb.from('usuarios').select('id,nombre,pin').eq('rol','encargado').eq('activo',true).order('nombre')
-      ]);
-      if(e1) throw e1; if(e2) throw e2;
-      return [
-        ...(puestos||[]).map(p=>({id:p.id, nombre:p.nombre, pin:p.pin, tipo:'puesto'})),
-        ...(encs||[]).map(u=>({id:u.id, nombre:u.nombre, pin:u.pin, tipo:'encargado'}))
-      ];
-    });
+    // si no hay red al abrir la app, se usa la última lista conocida (para entrar hace falta red: el PIN lo comprueba el servidor)
+    const users = await readCached('login_users2', async()=>(await this.lista()).filter(u=>u.activo));
     if(!users){ $('#usersList').innerHTML='<div class="vacio" style="grid-column:1/-1;text-align:center">No se pudo conectar con el servidor. Comprueba la conexión y <a href="#" onclick="event.preventDefault();location.reload()">vuelve a intentarlo</a>.</div>'; return; }
     this.users = users;
     this.renderUsers();
@@ -976,7 +1072,7 @@ const Login = {
   pick(i){
     this.sel = this.users[i]; this.pin='';
     // puesto creado en Oficina "sin PIN": entra directamente (antes se quedaba bloqueado en el teclado)
-    if(!this.sel.pin){ this.check(); return; }
+    if(!this.sel.pin_len){ this.check(); return; }
     $('#userStep').classList.add('hidden');
     $('#pinStep').classList.remove('hidden');
     $('#pinName').textContent = this.sel.nombre;
@@ -991,7 +1087,7 @@ const Login = {
     }).join('');
   },
   renderDots(){
-    const n = this.sel ? Math.max(4, (this.sel.pin||'').length) : 4;
+    const n = this.sel ? Math.max(4, this.sel.pin_len||0) : 4;
     let h=''; for(let i=0;i<n;i++) h+=`<i class="${i<this.pin.length?'on':''}"></i>`;
     $('#pinDots').innerHTML = h;
   },
@@ -1001,24 +1097,31 @@ const Login = {
     if(k==='⌫'){ this.pin=this.pin.slice(0,-1); }
     else if(this.pin.length < 8){ this.pin+=k; }
     this.renderDots();
-    if(this.pin.length === String(this.sel.pin||'').length) this.check();
+    if(this.pin.length === this.sel.pin_len) this.check();
   },
-  check(){
-    if(!this.sel.pin || this.pin === String(this.sel.pin)){
-      this.fallos=0;
-      const u = {id:this.sel.id, nombre:this.sel.nombre, tipo:this.sel.tipo};
-      try{
-        if(u.tipo==='puesto') localStorage.setItem('molyn_puesto_user', JSON.stringify(u));
-        else sessionStorage.setItem('molyn_user', JSON.stringify(u));
-      }catch(e){}
-      this.enter(u);
-    }else{
-      this.fallos++;
-      // freno contra probar PINs al azar: tras 5 fallos seguidos, 30 s de espera
-      if(this.fallos>=5){ this.fallos=0; this.bloqueoHasta=Date.now()+30000; $('#pinErr').textContent='Demasiados intentos. Espera 30 s'; }
-      else $('#pinErr').textContent = 'PIN incorrecto';
-      this.pin=''; this.renderDots(); beep(false);
-    }
+  // el PIN lo comprueba el servidor (la tablet no lo conoce); tras 5 fallos seguidos hace esperar
+  async check(){
+    if(this._chk || !this.sel) return; this._chk=true;
+    const sel=this.sel;
+    const aviso=m=>{ $('#pinErr').textContent=m; if($('#pinStep').classList.contains('hidden')) toast(m,'err'); };
+    try{
+      const {data,error}=await sb.rpc('planta_login',{p_tipo:sel.tipo,p_id:String(sel.id),p_pin:this.pin});
+      if(error){ aviso(esRed(error)?'Sin conexión: no se puede comprobar el PIN':'Error: '+error.message); this.pin=''; this.renderDots(); return; }
+      if(data && data.ok){
+        const u = {id:sel.id, nombre:sel.nombre, tipo:sel.tipo};
+        try{
+          if(u.tipo==='puesto') localStorage.setItem('molyn_puesto_user', JSON.stringify(u));
+          else sessionStorage.setItem('molyn_user', JSON.stringify(u));
+        }catch(e){}
+        this.enter(u);
+      }else{
+        const espera=Number(data&&data.espera)||0;
+        if(data && data.inactivo) aviso('Este usuario ya no está activo');
+        else if(espera>0){ this.bloqueoHasta=Date.now()+espera*1000; aviso('Demasiados intentos. Espera '+espera+' s'); }
+        else aviso('PIN incorrecto');
+        this.pin=''; this.renderDots(); beep(false);
+      }
+    }finally{ this._chk=false; }
   },
   back(){
     this.sel=null; this.pin='';
@@ -1928,7 +2031,7 @@ const Enc = {
     if(this.mad==null){ try{ const {data:cfg}=await sb.from('config').select('maduracion').eq('id',1).single(); if(cfg&&cfg.maduracion!=null) this.mad=cfg.maduracion; }catch(e){} }
     try{
       const hoy=new Date(); hoy.setHours(0,0,0,0); const hIso=hoy.toISOString();
-      const {data:ops}=await sb.from('puestos_trabajo').select('id,nombre').eq('activo',true).order('nombre');
+      const ops=(await Login.lista()).filter(u=>u.tipo==='puesto'&&u.activo);
       const evs=await selAll(()=>sb.from('fabricacion_eventos').select('unidad_id,ot,sku,puesto_id,tipo,ts').gte('ts',hIso),['ts','unidad_id','tipo']);
       const {data:pars}=await sb.from('paradas').select('puesto_id,motivo,inicio,fin').gte('inicio',hIso);
       const {data:turs}=await sb.from('turnos').select('puesto_id,inicio,fin').gte('inicio',hIso);
@@ -2368,7 +2471,7 @@ setInterval(tickClock,1000);
 
 Q.load();
 setInterval(()=>Q.flush(), 15000);
-Login.init();
+Disp.init().then(()=>Login.init()); // primero, que la tablet esté autorizada
 // permite abrir la app sin conexión (ver sw.js). Solo en HTTPS (GitHub Pages).
 if('serviceWorker' in navigator && location.protocol==='https:'){
   window.addEventListener('load',()=>navigator.serviceWorker.register('sw.js').catch(()=>{}));
