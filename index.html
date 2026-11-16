@@ -319,6 +319,16 @@ main{padding:14px 16px calc(40px + env(safe-area-inset-bottom));max-width:900px;
 .rec-nums div{background:var(--surf2);border-radius:var(--r-sm);padding:10px;text-align:center;font-size:13px;color:var(--muted);font-weight:600}
 .rec-nums b{display:block;font-family:var(--mono);font-size:30px;color:var(--ink);line-height:1.1}
 .rec-nums .tot{background:var(--ink);color:#fff}.rec-nums .tot b{color:#fff}
+.rec-lotes{margin:4px 0 12px}
+.rec-lotes .rl-t{font-size:13px;font-weight:800;color:var(--muted);letter-spacing:.06em;text-transform:uppercase;margin:0 0 4px}
+.rec-lote{display:flex;align-items:center;gap:10px;padding:9px 2px;border-bottom:1px solid var(--border)}
+.rec-lote .rl-n{font-family:var(--mono);font-weight:800;font-size:16px;min-width:0}
+.rec-lote .rl-n small{display:block;font-family:var(--sans);font-weight:600;font-size:12px;color:var(--muted)}
+.rec-lote .rl-c{margin-left:auto;display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}
+.rec-lote .rl-c span{font-family:var(--mono);font-weight:800;font-size:15px;padding:4px 9px;border-radius:var(--pill);white-space:nowrap}
+.rec-lote .rl-c .d{background:#F7E8E0;color:#8F4222}.rec-lote .rl-c .m{background:#E1EAEF;color:#3C6375}.rec-lote .rl-c .f{background:var(--surf2);color:var(--ink2)}
+.rec-lote .rl-c .z{opacity:.35}
+.rec-fifo{font-family:var(--mono);font-size:12px;color:var(--ink2);line-height:1.7;word-break:break-all;margin-top:6px}
 .rec-aviso{font-size:15px;border-radius:var(--r-sm);padding:10px 12px;margin-bottom:10px;line-height:1.35}
 .rec-aviso.inf{background:var(--surf2);color:var(--ink2)}.rec-aviso.warn{background:var(--amber-soft);color:var(--amber)}
 .rec-cont{display:flex;align-items:center;gap:10px;margin:6px 0 12px}
@@ -2022,11 +2032,23 @@ const Enc = {
         else{ const {data}=await sb.from('unidades').select('sku').eq('id',c).limit(1); if(data&&data.length) sku=data[0].sku; } }
       if(!sku){ toast('Código no reconocido: '+txt,'err'); beep(false); return; }
       const [uds,pets]=await Promise.all([
-        selAll(()=>sb.from('unidades').select('estado,fabricada_at').eq('sku',sku).in('estado',['stock','pendiente']),['id']),
+        selAll(()=>sb.from('unidades').select('id,ot,estado,fabricada_at').eq('sku',sku).in('estado',['stock','pendiente']),['id']),
         sb.from('ajustes_inventario').select('tipo,cantidad').eq('sku',sku).eq('estado','pendiente').then(r=>r.data||[]).catch(()=>[])]);
       const now=Date.now(), madms=this.mad*86400000; let disp=0,madur=0,fab=0;
       uds.forEach(u=>{ if(u.estado==='pendiente'){ fab++; return; } const f=u.fabricada_at?new Date(u.fabricada_at).getTime():0; if(f&&now-f>=madms) disp++; else madur++; });
-      this.rec={sku,disp,madur,total:disp+madur,fab,hoja,fechaHoja,pets};
+      // LOTES: lo que hay ahora de este núcleo agrupado por orden de trabajo (como la ficha del Dashboard en Oficina),
+      // los más antiguos primero (FIFO), y las unidades más antiguas para saber cuáles buscar
+      const porOt={};
+      uds.forEach(u=>{ const k=u.ot||'—'; const o=porOt[k]||(porOt[k]={ot:k,disp:0,madur:0,fab:0,f0:null});
+        if(u.estado==='pendiente'){ o.fab++; return; }
+        const f=u.fabricada_at?new Date(u.fabricada_at).getTime():0;
+        if(f&&now-f>=madms) o.disp++; else o.madur++;
+        if(f&&(o.f0==null||f<o.f0)) o.f0=f; });
+      const ots=Object.keys(porOt).filter(k=>k!=='—');
+      try{ if(ots.length){ const {data:od}=await sb.from('ordenes').select('ot,cantidad,lanzada_at').in('ot',ots); (od||[]).forEach(o=>{ if(porOt[o.ot]){ porOt[o.ot].total=o.cantidad; porOt[o.ot].lanzada=o.lanzada_at; } }); } }catch(e){}
+      const lotes=Object.values(porOt).sort((a,b)=>((b.disp+b.madur>0)-(a.disp+a.madur>0))||((a.f0==null)-(b.f0==null))||((a.f0||0)-(b.f0||0))||String(a.ot).localeCompare(String(b.ot)));
+      const fifo=uds.filter(u=>u.estado==='stock').map(u=>({id:u.id,f:u.fabricada_at?new Date(u.fabricada_at).getTime():0})).sort((a,b)=>(a.f-b.f)||String(a.id).localeCompare(String(b.id))).slice(0,6).map(x=>x.id);
+      this.rec={sku,disp,madur,total:disp+madur,fab,hoja,fechaHoja,pets,lotes,fifo};
       beep(true); this.pintarRec(this.rec.total);
     }catch(e){ toast('Error: '+(e.message||e),'err'); }
   },
@@ -2041,9 +2063,16 @@ const Enc = {
     if(r.fab) avisos.push(`<div class="rec-aviso inf">Además hay <b>${r.fab}</b> fabricándose (no cuentan: aún no están en el almacén).</div>`);
     const pi=this._pistas&&this._pistas[r.sku]; if(pi) avisos.push(`<div class="rec-aviso warn">Este núcleo tiene ${pi.etq?pi.etq+' etiquetas sin terminar desde hace días':''}${pi.etq&&pi.res?' y ':''}${pi.res?pi.res+' reservas viejas sin consumir':''}: puede ser la causa si no cuadra.</div>`);
     const ya=(this.recLineas||[]).find(x=>x.sku===r.sku); if(ya) avisos.push(`<div class="rec-aviso inf">Ya lo contaste en este recuento: <b>${ya.contado}</b>. Si lo guardas otra vez, se sustituye.</div>`);
+    const fD=ts=>ts?new Date(ts).toLocaleDateString('es-ES',{day:'2-digit',month:'2-digit'}):'';
+    const lotesHtml=`<div class="rec-lotes"><div class="rl-t">Lotes ahora mismo</div>${(r.lotes||[]).length?(r.lotes||[]).map(l=>`<div class="rec-lote">
+        <div class="rl-n">${esc(l.ot)}<small>${l.lanzada?'lanzada '+fD(l.lanzada):''}${l.total?(l.lanzada?' · ':'')+'de '+l.total:''}</small></div>
+        <div class="rl-c"><span class="d${l.disp?'':' z'}">${l.disp} disp</span><span class="m${l.madur?'':' z'}">${l.madur} mad</span><span class="f${l.fab?'':' z'}">${l.fab} fab</span></div></div>`).join('')
+      :'<div class="vacio" style="padding:10px 0;text-align:left">Este núcleo no tiene stock ni unidades en fabricación.</div>'}
+      ${(r.fifo||[]).length?`<div class="rec-fifo">Más antiguas: ${r.fifo.map(esc).join(' → ')}</div>`:''}</div>`;
     $('#recNuc').innerHTML=`<div class="rec-nuc">
       <div class="rn-t">${esc(med[1]?(+med[1])+' × '+(+med[2]):(this.prodMap[r.sku]||r.sku))}</div><div class="rn-c">${esc(r.sku)}${this.prodMap[r.sku]&&this.prodMap[r.sku]!==r.sku?' · '+esc(this.prodMap[r.sku]):''}</div>
       <div class="rec-nums"><div>Disponibles<b>${r.disp}</b></div><div>Madurando<b>${r.madur}</b></div><div class="tot">En la app<b>${r.total}</b></div></div>
+      ${lotesHtml}
       ${avisos.join('')}
       <div class="rec-cont"><span>Maduros<small>disponibles ya</small></span><div class="stp"><button onclick="Enc.recPaso('D',-1)">−</button><input id="recContD" type="number" min="0" inputmode="numeric" value="${r.disp}" oninput="Enc.recRes()"><button onclick="Enc.recPaso('D',1)">+</button></div></div>
       <div class="rec-cont"><span>Madurando<small>aún en maduración</small></span><div class="stp"><button onclick="Enc.recPaso('M',-1)">−</button><input id="recContM" type="number" min="0" inputmode="numeric" value="${r.madur}" oninput="Enc.recRes()"><button onclick="Enc.recPaso('M',1)">+</button></div></div>
